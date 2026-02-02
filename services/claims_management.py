@@ -1,0 +1,501 @@
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
+from sqlalchemy.orm import Session
+from models.insurance_models import IncidentReport, Claim, InsuranceEnvelope
+from utils.exceptions import ValidationError
+
+
+class IncidentReportingService:
+    """
+    Service for handling incident reports that may lead to claims
+    """
+    
+    @staticmethod
+    def report_incident(
+        db: Session,
+        envelope_id: str,
+        reported_by: str,
+        incident_type: str,
+        severity: str,
+        description: str,
+        occurred_at: datetime,
+        evidence_urls: Optional[List[str]] = None
+    ) -> IncidentReport:
+        """
+        Create a new incident report
+        """
+        if evidence_urls is None:
+            evidence_urls = []
+        
+        # Validate inputs
+        valid_types = ['injury', 'property', 'behavioral']
+        if incident_type not in valid_types:
+            raise ValidationError(f"Incident type must be one of: {valid_types}")
+        
+        valid_severities = ['low', 'medium', 'high']
+        if severity not in valid_severities:
+            raise ValidationError(f"Severity must be one of: {valid_severities}")
+        
+        # Verify envelope exists
+        envelope = db.query(InsuranceEnvelope).filter(
+            InsuranceEnvelope.id == envelope_id
+        ).first()
+        
+        if not envelope:
+            raise ValidationError(f"Insurance envelope {envelope_id} not found")
+        
+        # Create incident report
+        incident_report = IncidentReport(
+            envelope_id=envelope_id,
+            reported_by=reported_by,
+            incident_type=incident_type,
+            severity=severity,
+            description=description,
+            occurred_at=occurred_at,
+            evidence_urls=evidence_urls
+        )
+        
+        db.add(incident_report)
+        db.commit()
+        db.refresh(incident_report)
+        
+        # If incident is high severity, automatically trigger claim process
+        if severity == 'high':
+            ClaimService.auto_open_claim(db, envelope_id, incident_report.id)
+        
+        return incident_report
+    
+    @staticmethod
+    def get_incidents_for_envelope(
+        db: Session,
+        envelope_id: str
+    ) -> List[IncidentReport]:
+        """
+        Get all incidents for a specific envelope
+        """
+        return db.query(IncidentReport).filter(
+            IncidentReport.envelope_id == envelope_id
+        ).all()
+    
+    @staticmethod
+    def get_recent_incidents(
+        db: Session,
+        days_back: int = 30
+    ) -> List[IncidentReport]:
+        """
+        Get recent incidents within a specified time period
+        """
+        from sqlalchemy import and_, func
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=days_back)
+        
+        return db.query(IncidentReport).filter(
+            IncidentReport.occurred_at >= cutoff_date
+        ).order_by(IncidentReport.occurred_at.desc()).all()
+
+
+class ClaimService:
+    """
+    Service for handling insurance claims
+    """
+    
+    @staticmethod
+    def open_claim(
+        db: Session,
+        envelope_id: str,
+        claimant_type: str,
+        description: str = ""
+    ) -> Claim:
+        """
+        Open a new insurance claim
+        """
+        valid_claimant_types = ['space_owner', 'participant', 'platform']
+        if claimant_type not in valid_claimant_types:
+            raise ValidationError(f"Claimant type must be one of: {valid_claimant_types}")
+        
+        # Verify envelope exists
+        envelope = db.query(InsuranceEnvelope).filter(
+            InsuranceEnvelope.id == envelope_id
+        ).first()
+        
+        if not envelope:
+            raise ValidationError(f"Insurance envelope {envelope_id} not found")
+        
+        # Create claim
+        claim = Claim(
+            envelope_id=envelope_id,
+            claimant_type=claimant_type,
+            status='opened',
+            description=description
+        )
+        
+        db.add(claim)
+        db.commit()
+        db.refresh(claim)
+        
+        # Update envelope status to reflect claim
+        envelope.status = 'claim_open'
+        db.commit()
+        
+        return claim
+    
+    @staticmethod
+    def auto_open_claim(
+        db: Session,
+        envelope_id: str,
+        triggering_incident_id: Optional[str] = None
+    ) -> Optional[Claim]:
+        """
+        Automatically open a claim based on certain conditions
+        """
+        # Check if there's already an open claim for this envelope
+        existing_claim = db.query(Claim).filter(
+            Claim.envelope_id == envelope_id,
+            Claim.status.in_(['opened', 'under_review'])
+        ).first()
+        
+        if existing_claim:
+            return existing_claim
+        
+        # Create automatic claim
+        claim = Claim(
+            envelope_id=envelope_id,
+            claimant_type='platform',  # Auto-generated by system
+            status='opened',
+            description=f"Auto-generated claim due to incident {triggering_incident_id}" if triggering_incident_id else "Auto-generated claim"
+        )
+        
+        db.add(claim)
+        db.commit()
+        db.refresh(claim)
+        
+        # Update envelope status
+        envelope = db.query(InsuranceEnvelope).filter(
+            InsuranceEnvelope.id == envelope_id
+        ).first()
+        
+        if envelope:
+            envelope.status = 'claim_open'
+            db.commit()
+        
+        return claim
+    
+    @staticmethod
+    def update_claim_status(
+        db: Session,
+        claim_id: str,
+        new_status: str,
+        payout_amount: Optional[float] = None
+    ) -> Claim:
+        """
+        Update the status of a claim
+        """
+        valid_statuses = ['opened', 'under_review', 'approved', 'denied', 'paid']
+        if new_status not in valid_statuses:
+            raise ValidationError(f"Status must be one of: {valid_statuses}")
+        
+        claim = db.query(Claim).filter(
+            Claim.id == claim_id
+        ).first()
+        
+        if not claim:
+            raise ValidationError(f"Claim {claim_id} not found")
+        
+        # Update claim
+        claim.status = new_status
+        if payout_amount is not None:
+            claim.payout_amount = payout_amount
+        
+        # Update closed_at if claim is finalized
+        if new_status in ['approved', 'denied', 'paid']:
+            claim.closed_at = datetime.utcnow()
+        
+        db.commit()
+        db.refresh(claim)
+        
+        return claim
+    
+    @staticmethod
+    def get_claim_details(db: Session, claim_id: str) -> Optional[Claim]:
+        """
+        Get detailed information about a specific claim
+        """
+        return db.query(Claim).filter(
+            Claim.id == claim_id
+        ).first()
+    
+    @staticmethod
+    def get_claims_for_envelope(db: Session, envelope_id: str) -> List[Claim]:
+        """
+        Get all claims for a specific envelope
+        """
+        return db.query(Claim).filter(
+            Claim.envelope_id == envelope_id
+        ).all()
+    
+    @staticmethod
+    def get_open_claims(db: Session) -> List[Claim]:
+        """
+        Get all currently open claims
+        """
+        return db.query(Claim).filter(
+            Claim.status.in_(['opened', 'under_review'])
+        ).all()
+    
+    @staticmethod
+    def process_claim_review(
+        db: Session,
+        claim_id: str,
+        reviewer_id: str,
+        decision: str,  # 'approve' or 'deny'
+        payout_amount: Optional[float] = None,
+        notes: str = ""
+    ) -> Claim:
+        """
+        Process a claim review and make a decision
+        """
+        if decision not in ['approve', 'deny']:
+            raise ValidationError("Decision must be 'approve' or 'deny'")
+        
+        claim = db.query(Claim).filter(
+            Claim.id == claim_id
+        ).first()
+        
+        if not claim:
+            raise ValidationError(f"Claim {claim_id} not found")
+        
+        if decision == 'approve':
+            claim.status = 'approved'
+            if payout_amount is not None:
+                claim.payout_amount = payout_amount
+        else:
+            claim.status = 'denied'
+        
+        # Add review notes to description
+        claim.description += f"\n\nReview by {reviewer_id}: {notes}"
+        
+        db.commit()
+        db.refresh(claim)
+        
+        return claim
+
+
+class ClaimsReportingService:
+    """
+    Service for generating reports about claims and incidents
+    """
+    
+    @staticmethod
+    def get_claims_summary(db: Session) -> Dict[str, Any]:
+        """
+        Get a summary of all claims
+        """
+        from sqlalchemy import func
+        
+        total_claims = db.query(Claim).count()
+        open_claims = db.query(Claim).filter(
+            Claim.status.in_(['opened', 'under_review'])
+        ).count()
+        approved_claims = db.query(Claim).filter(
+            Claim.status == 'approved'
+        ).count()
+        denied_claims = db.query(Claim).filter(
+            Claim.status == 'denied'
+        ).count()
+        
+        total_payout = db.query(func.sum(Claim.payout_amount)).filter(
+            Claim.status == 'paid'
+        ).scalar() or 0.0
+        
+        return {
+            "total_claims": total_claims,
+            "open_claims": open_claims,
+            "approved_claims": approved_claims,
+            "denied_claims": denied_claims,
+            "total_payout": float(total_payout)
+        }
+    
+    @staticmethod
+    def get_incidents_by_type(db: Session) -> Dict[str, int]:
+        """
+        Get count of incidents by type
+        """
+        from sqlalchemy import func
+        
+        results = db.query(
+            IncidentReport.incident_type,
+            func.count(IncidentReport.id)
+        ).group_by(IncidentReport.incident_type).all()
+        
+        return {incident_type: count for incident_type, count in results}
+    
+    @staticmethod
+    def get_claims_by_severity(db: Session) -> Dict[str, int]:
+        """
+        Get count of claims by associated incident severity
+        """
+        from sqlalchemy import func
+        
+        results = db.query(
+            IncidentReport.severity,
+            func.count(Claim.id)
+        ).join(
+            IncidentReport, 
+            Claim.envelope_id == IncidentReport.envelope_id
+        ).group_by(IncidentReport.severity).all()
+        
+        return {severity: count for severity, count in results}
+    
+    @staticmethod
+    def get_trending_incidents(db: Session, days_back: int = 7) -> List[Dict[str, Any]]:
+        """
+        Get trending incidents in the specified time period
+        """
+        from sqlalchemy import func, and_
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=days_back)
+        
+        # Group incidents by day
+        results = db.query(
+            func.date(IncidentReport.occurred_at).label('date'),
+            func.count(IncidentReport.id).label('count')
+        ).filter(
+            IncidentReport.occurred_at >= cutoff_date
+        ).group_by(
+            func.date(IncidentReport.occurred_at)
+        ).order_by(
+            func.date(IncidentReport.occurred_at)
+        ).all()
+        
+        return [{"date": str(date), "count": count} for date, count in results]
+
+
+class RiskAnalysisService:
+    """
+    Service for analyzing risk patterns from incidents and claims
+    """
+    
+    @staticmethod
+    def analyze_space_risk_profile(db: Session, space_id: str) -> Dict[str, Any]:
+        """
+        Analyze risk profile for a specific space based on incidents
+        """
+        from sqlalchemy import func
+        
+        # Get all incidents for this space
+        incident_count = db.query(IncidentReport).join(
+            InsuranceEnvelope,
+            IncidentReport.envelope_id == InsuranceEnvelope.id
+        ).filter(
+            InsuranceEnvelope.space_id == space_id
+        ).count()
+        
+        # Get average severity
+        avg_severity = db.query(
+            func.avg(
+                func.case(
+                    [(IncidentReport.severity == 'low', 1),
+                     (IncidentReport.severity == 'medium', 2),
+                     (IncidentReport.severity == 'high', 3)],
+                    else_=0
+                )
+            )
+        ).join(
+            InsuranceEnvelope,
+            IncidentReport.envelope_id == InsuranceEnvelope.id
+        ).filter(
+            InsuranceEnvelope.space_id == space_id
+        ).scalar()
+        
+        # Get incident types distribution
+        type_counts = db.query(
+            IncidentReport.incident_type,
+            func.count(IncidentReport.id)
+        ).join(
+            InsuranceEnvelope,
+            IncidentReport.envelope_id == InsuranceEnvelope.id
+        ).filter(
+            InsuranceEnvelope.space_id == space_id
+        ).group_by(IncidentReport.incident_type).all()
+        
+        type_distribution = {inc_type: count for inc_type, count in type_counts}
+        
+        return {
+            "space_id": space_id,
+            "incident_count": incident_count,
+            "average_severity": float(avg_severity) if avg_severity else 0.0,
+            "type_distribution": type_distribution,
+            "risk_level": RiskAnalysisService._calculate_risk_level(
+                incident_count, avg_severity or 0.0
+            )
+        }
+    
+    @staticmethod
+    def _calculate_risk_level(incident_count: int, avg_severity: float) -> str:
+        """
+        Calculate risk level based on incident metrics
+        """
+        # Simple calculation - in reality this would be more sophisticated
+        risk_score = incident_count * avg_severity
+        
+        if risk_score <= 2:
+            return "low"
+        elif risk_score <= 5:
+            return "medium"
+        else:
+            return "high"
+    
+    @staticmethod
+    def analyze_activity_risk_profile(db: Session, activity_class_id: str) -> Dict[str, Any]:
+        """
+        Analyze risk profile for a specific activity class based on incidents
+        """
+        from sqlalchemy import func
+        
+        # Get all incidents for this activity class
+        incident_count = db.query(IncidentReport).join(
+            InsuranceEnvelope,
+            IncidentReport.envelope_id == InsuranceEnvelope.id
+        ).filter(
+            InsuranceEnvelope.activity_class_id == activity_class_id
+        ).count()
+        
+        # Get average severity
+        avg_severity = db.query(
+            func.avg(
+                func.case(
+                    [(IncidentReport.severity == 'low', 1),
+                     (IncidentReport.severity == 'medium', 2),
+                     (IncidentReport.severity == 'high', 3)],
+                    else_=0
+                )
+            )
+        ).join(
+            InsuranceEnvelope,
+            IncidentReport.envelope_id == InsuranceEnvelope.id
+        ).filter(
+            InsuranceEnvelope.activity_class_id == activity_class_id
+        ).scalar()
+        
+        # Get incident types distribution
+        type_counts = db.query(
+            IncidentReport.incident_type,
+            func.count(IncidentReport.id)
+        ).join(
+            InsuranceEnvelope,
+            IncidentReport.envelope_id == InsuranceEnvelope.id
+        ).filter(
+            InsuranceEnvelope.activity_class_id == activity_class_id
+        ).group_by(IncidentReport.incident_type).all()
+        
+        type_distribution = {inc_type: count for inc_type, count in type_counts}
+        
+        return {
+            "activity_class_id": activity_class_id,
+            "incident_count": incident_count,
+            "average_severity": float(avg_severity) if avg_severity else 0.0,
+            "type_distribution": type_distribution,
+            "risk_level": RiskAnalysisService._calculate_risk_level(
+                incident_count, avg_severity or 0.0
+            )
+        }
