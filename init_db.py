@@ -22,13 +22,15 @@ def init_db():
     try:
         # Check if we already have seed data
         if db.query(PolicyRoot).count() == 0:
-            # Add default policy root
+            # Add default policy root with current/future dates
+            from datetime import datetime, timedelta
+            now = datetime.utcnow()
             default_policy = PolicyRoot(
                 insurer_name="Third Place Insurance",
                 policy_number="TP-DEFAULT-001",
                 jurisdiction="US-DEFAULT",
-                effective_from="2024-01-01T00:00:00Z",
-                effective_until="2025-01-01T00:00:00Z",
+                effective_from=now,
+                effective_until=now + timedelta(days=365),  # 1 year from now
                 activity_classes={
                     "passive": {"limits": {"general_liability": 1000000}},
                     "light_physical": {"limits": {"general_liability": 1500000}},

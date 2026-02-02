@@ -9,6 +9,8 @@ from services.insurance_envelope_service import InsuranceEnvelopeService
 from services.activity_classification_engine import ActivityClassificationEngine, ActivityProfile
 from services.pricing_engine import InsurancePricingEngine
 from models.insurance_models import InsuranceEnvelope
+from services.auth_service import get_current_active_user, User
+from utils.exceptions import ValidationError, InsuranceValidationError, CoverageError, ClassificationError
 
 
 # Initialize FastAPI app
@@ -75,7 +77,7 @@ class VerifyCoverageResult(BaseModel):
 
 
 @app.post("/ial/activity/classify", response_model=ClassifyActivityResult)
-async def classify_activity(request: ClassifyActivityRequest, db=Depends(get_db)):
+async def classify_activity(request: ClassifyActivityRequest, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Classify an activity and determine its risk profile
     """
@@ -89,7 +91,7 @@ async def classify_activity(request: ClassifyActivityRequest, db=Depends(get_db)
             minors_present=request.minors_present,
             attendance_cap=request.attendance_cap
         )
-        
+
         return ClassifyActivityResult(
             activity_class=result.get('activity_class_slug', 'unknown'),
             risk_score=result.get('risk_score', 0.0),
@@ -97,15 +99,20 @@ async def classify_activity(request: ClassifyActivityRequest, db=Depends(get_db)
             required_limits=result.get('required_limits', {}),
             violation_reasons=result.get('violation_reasons', [])
         )
-    except Exception as e:
+    except (ValidationError, InsuranceValidationError, CoverageError, ClassificationError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error classifying activity: {str(e)}"
+            detail=f"Validation error: {str(e)}"
         )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error occurred"
+        ) from e
 
 
 @app.post("/ial/pricing/quote", response_model=QuotePricingResult)
-async def quote_pricing(request: QuotePricingRequest, db=Depends(get_db)):
+async def quote_pricing(request: QuotePricingRequest, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Get a pricing quote for insurance coverage
     """
@@ -118,21 +125,26 @@ async def quote_pricing(request: QuotePricingRequest, db=Depends(get_db)):
             duration_minutes=request.duration_minutes,
             jurisdiction=request.jurisdiction
         )
-        
+
         return QuotePricingResult(
             price=result['price'],
             currency=result['currency'],
             breakdown=result['breakdown']
         )
-    except Exception as e:
+    except (ValidationError, InsuranceValidationError, CoverageError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error calculating pricing: {str(e)}"
+            detail=f"Pricing error: {str(e)}"
         )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error occurred"
+        ) from e
 
 
 @app.post("/ial/envelopes", response_model=CreateEnvelopeResult)
-async def create_insurance_envelope(request: CreateEnvelopeRequest, db=Depends(get_db)):
+async def create_insurance_envelope(request: CreateEnvelopeRequest, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Create a new insurance envelope
     """
@@ -152,27 +164,32 @@ async def create_insurance_envelope(request: CreateEnvelopeRequest, db=Depends(g
             alcohol=request.alcohol,
             minors_present=request.minors_present
         )
-        
+
         return CreateEnvelopeResult(
             envelope_id=str(envelope.id),
             status=envelope.status,
             certificate_url=envelope.certificate_url
         )
-    except Exception as e:
+    except (ValidationError, InsuranceValidationError, CoverageError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error creating insurance envelope: {str(e)}"
+            detail=f"Envelope creation error: {str(e)}"
         )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error occurred"
+        ) from e
 
 
 @app.get("/ial/envelopes/{envelope_id}/verify", response_model=VerifyCoverageResult)
-async def verify_coverage(envelope_id: str, db=Depends(get_db)):
+async def verify_coverage(envelope_id: str, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Verify if an insurance envelope is valid
     """
     try:
         envelope = InsuranceEnvelopeService.get_active_envelope(db, envelope_id)
-        
+
         if envelope and InsuranceEnvelopeService.is_envelope_valid(envelope):
             return VerifyCoverageResult(
                 valid=True,
@@ -185,31 +202,41 @@ async def verify_coverage(envelope_id: str, db=Depends(get_db)):
                 coverage_limits={},
                 valid_until=datetime.min
             )
-    except Exception as e:
+    except (ValidationError, InsuranceValidationError, CoverageError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error verifying coverage: {str(e)}"
+            detail=f"Verification error: {str(e)}"
         )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error occurred"
+        ) from e
 
 
 @app.post("/ial/envelopes/{envelope_id}/void")
-async def void_envelope(envelope_id: str, reason: str, db=Depends(get_db)):
+async def void_envelope(envelope_id: str, reason: str, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Void an insurance envelope
     """
     try:
         envelope = InsuranceEnvelopeService.deactivate_envelope(db, envelope_id, reason)
-        
+
         return {
             "envelope_id": str(envelope.id),
             "status": envelope.status,
             "reason": reason
         }
-    except Exception as e:
+    except (ValidationError, InsuranceValidationError, CoverageError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error voiding envelope: {str(e)}"
+            detail=f"Void error: {str(e)}"
         )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error occurred"
+        ) from e
 
 
 # Health check endpoint

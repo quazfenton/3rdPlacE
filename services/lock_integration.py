@@ -79,26 +79,27 @@ class AccessGrantService:
         if not envelope:
             raise ValueError(f"Active envelope {envelope_id} not found")
         
+        # Check if adapter exists before creating the access grant
+        adapter = self.adapters.get(lock_vendor)
+        if not adapter:
+            raise ValueError(f"No adapter registered for vendor: {lock_vendor}")
+
         # Create the access grant record
         access_grant = AccessGrant(
             envelope_id=envelope_id,
             lock_id=lock_id,
-            access_type=self._determine_access_type(lock_vendor),
+            access_type=self._determine_access_type(lock_vendor).value,
             valid_from=valid_from,
             valid_until=valid_until,
             attendance_cap=attendance_cap,
             status='active'
         )
-        
+
         db.add(access_grant)
         db.commit()
         db.refresh(access_grant)
-        
+
         # Provision access through the appropriate lock adapter
-        adapter = self.adapters.get(lock_vendor)
-        if not adapter:
-            raise ValueError(f"No adapter registered for vendor: {lock_vendor}")
-        
         grant_data = {
             "grant_id": str(access_grant.id),
             "envelope_id": envelope_id,
@@ -107,12 +108,12 @@ class AccessGrantService:
             "valid_until": valid_until.isoformat(),
             "attendance_cap": attendance_cap
         }
-        
+
         provision_result = await adapter.provision_access(grant_data)
-        
+
         # Update the access grant with the provision result
-        access_grant.access_type = provision_result.get('access_type', 'qr')
-        
+        access_grant.access_type = provision_result.get('access_type', 'qr').value if isinstance(provision_result.get('access_type', 'qr'), AccessType) else provision_result.get('access_type', 'qr')
+
         db.commit()
         db.refresh(access_grant)
         
@@ -135,56 +136,57 @@ class AccessGrantService:
         """
         from models.insurance_models import AccessGrant, InsuranceEnvelope
         from sqlalchemy.orm import Session
-        
-        # Get the access grant
+        from datetime import timezone
+
+        # Get the access grant with FOR UPDATE to prevent race conditions
         grant = db.query(AccessGrant).filter(
             AccessGrant.id == grant_id
-        ).first()
-        
+        ).with_for_update().first()
+
         if not grant:
             return {
                 "allowed": False,
                 "reason": "Invalid grant ID"
             }
-        
+
         # Check if grant is still valid
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if grant.status != 'active' or not (grant.valid_from <= now <= grant.valid_until):
             return {
                 "allowed": False,
                 "reason": "Grant is not active"
             }
-        
+
         # Check attendance capacity
         remaining_capacity = grant.attendance_cap - grant.checkins_used
-        
+
         if remaining_capacity <= 0:
             # Capacity exceeded - void the envelope and revoke access
             from services.insurance_envelope_service import InsuranceEnvelopeService
             envelope = db.query(InsuranceEnvelope).filter(
                 InsuranceEnvelope.id == grant.envelope_id
             ).first()
-            
+
             if envelope:
                 InsuranceEnvelopeService.deactivate_envelope(
                     db, grant.envelope_id, "attendance_cap_exceeded"
                 )
-                
+
                 # Revoke access through the appropriate lock adapter
                 lock_vendor = self._get_lock_vendor_from_id(grant.lock_id)
                 adapter = self.adapters.get(lock_vendor)
                 if adapter:
                     await adapter.revoke_access(grant_id)
-            
+
             return {
                 "allowed": False,
                 "reason": "attendance_cap_exceeded"
             }
-        
+
         # Increment check-in count
         grant.checkins_used += 1
         db.commit()
-        
+
         return {
             "allowed": True,
             "remaining_capacity": grant.attendance_cap - grant.checkins_used
@@ -303,12 +305,12 @@ class SchlageAdapter(LockAdapter):
         """
         Provision access through Schlage API (generate PIN)
         """
-        import random
+        import secrets
         import string
-        
-        # Generate a random 6-digit PIN
-        pin = ''.join(random.choices(string.digits, k=6))
-        
+
+        # Generate a cryptographically secure 6-digit PIN
+        pin = ''.join(secrets.choice(string.digits) for _ in range(6))
+
         # In a real implementation, this would call the Schlage API
         # to program the lock with the PIN for the specified time window
         return {

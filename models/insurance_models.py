@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, Numeric, Boolean, Text, ForeignKey, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
 from config.database import Base
@@ -37,7 +38,7 @@ class ActivityClass(Base):
     description = Column(Text)
     base_risk_score = Column(Numeric(3, 2), default=0.00)  # 0.00–1.00
     default_limits = Column(MutableDict.as_mutable(JSONB))
-    prohibited_equipment = Column(JSONB, default=list)
+    prohibited_equipment = Column(MutableDict.as_mutable(JSONB), default=list)
     allows_alcohol = Column(Boolean, default=False)
     allows_minors = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -97,6 +98,11 @@ class InsuranceEnvelope(Base):
         ),
     )
 
+    # Relationships
+    policy_root = relationship("PolicyRoot", lazy="joined")
+    activity_class = relationship("ActivityClass", lazy="joined")
+    space_profile = relationship("SpaceRiskProfile", foreign_keys=[space_id], lazy="joined")
+
 
 class InsurancePricing(Base):
     __tablename__ = "insurance_pricing"
@@ -122,7 +128,7 @@ class IncidentReport(Base):
     severity = Column(String, nullable=False)  # low, medium, high
     description = Column(Text)
     occurred_at = Column(DateTime(timezone=True), nullable=False)
-    evidence_urls = Column(JSONB, default=list)
+    evidence_urls = Column(MutableDict.as_mutable(JSONB), default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -151,7 +157,7 @@ class AccessGrant(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     envelope_id = Column(UUID(as_uuid=True), ForeignKey("insurance_envelope.id"), nullable=False)
-    lock_id = Column(UUID(as_uuid=True), nullable=False)
+    lock_id = Column(String, nullable=False)
     access_type = Column(String, nullable=False)  # qr, pin, bluetooth, api_unlock
 
     valid_from = Column(DateTime(timezone=True), nullable=False)

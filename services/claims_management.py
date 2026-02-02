@@ -128,15 +128,14 @@ class ClaimService:
             status='opened',
             description=description
         )
-        
+
         db.add(claim)
-        db.commit()
-        db.refresh(claim)
-        
+
         # Update envelope status to reflect claim
         envelope.status = 'claim_open'
         db.commit()
-        
+        db.refresh(claim)
+
         return claim
     
     @staticmethod
@@ -260,23 +259,27 @@ class ClaimService:
         claim = db.query(Claim).filter(
             Claim.id == claim_id
         ).first()
-        
+
         if not claim:
             raise ValidationError(f"Claim {claim_id} not found")
-        
+
+        # Validate that the claim is in a reviewable state
+        if claim.status not in ['opened', 'under_review']:
+            raise ValidationError(f"Claim {claim_id} is not in a reviewable state. Current status: {claim.status}")
+
         if decision == 'approve':
             claim.status = 'approved'
             if payout_amount is not None:
                 claim.payout_amount = payout_amount
         else:
             claim.status = 'denied'
-        
+
         # Add review notes to description
         claim.description += f"\n\nReview by {reviewer_id}: {notes}"
-        
+
         db.commit()
         db.refresh(claim)
-        
+
         return claim
 
 
@@ -391,9 +394,10 @@ class RiskAnalysisService:
         ).count()
         
         # Get average severity
+        from sqlalchemy import case
         avg_severity = db.query(
             func.avg(
-                func.case(
+                case(
                     [(IncidentReport.severity == 'low', 1),
                      (IncidentReport.severity == 'medium', 2),
                      (IncidentReport.severity == 'high', 3)],
@@ -461,9 +465,10 @@ class RiskAnalysisService:
         ).count()
         
         # Get average severity
+        from sqlalchemy import case
         avg_severity = db.query(
             func.avg(
-                func.case(
+                case(
                     [(IncidentReport.severity == 'low', 1),
                      (IncidentReport.severity == 'medium', 2),
                      (IncidentReport.severity == 'high', 3)],

@@ -227,22 +227,23 @@ class InsuranceEnvelopeService:
         policy = envelope.policy_root
         if not policy or policy.status != 'active':
             return False
-        
+
         # Check if the activity class is valid
         activity_class = envelope.activity_class
         if not activity_class:
             return False
-        
+
         # Check if the space profile is valid
         space_profile = envelope.space_profile
         if not space_profile:
             return False
-        
-        # Check time validity
-        now = datetime.utcnow()
-        if envelope.valid_from <= now <= envelope.valid_until:
+
+        # Check time validity - allow activation if valid_from is in future or currently valid
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        if envelope.valid_from <= envelope.valid_until and now <= envelope.valid_until:
             return True
-        
+
         return False
     
     @staticmethod

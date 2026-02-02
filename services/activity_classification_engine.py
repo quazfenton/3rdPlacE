@@ -249,7 +249,8 @@ class ActivityClassificationEngine:
         # Find the first class that accommodates the risk level and constraints
         for cls in classes:
             # Check if risk score fits within class range (with some tolerance)
-            if risk_score <= float(cls.base_risk_score) + 0.3 if cls.base_risk_score else 1.0:  # Allow some flexibility
+            threshold = float(cls.base_risk_score) + 0.3 if cls.base_risk_score is not None else 1.0
+            if risk_score <= threshold:  # Allow some flexibility
                 # Check alcohol and minors constraints
                 if (not alcohol or cls.allows_alcohol) and (not minors_present or cls.allows_minors):
                     return cls

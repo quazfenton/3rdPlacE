@@ -23,12 +23,15 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 @pytest.fixture
 def db_session():
     """Create a test database session"""
+    Base.metadata.drop_all(bind=engine)  # Clean up any existing tables
     Base.metadata.create_all(bind=engine)
     session = TestingSessionLocal()
     try:
         yield session
     finally:
         session.close()
+        # Clean up the database after the test
+        Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture

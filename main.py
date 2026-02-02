@@ -41,7 +41,11 @@ async def health():
 access_grant_service = AccessGrantService()
 access_grant_service.register_adapter("kisi", KisiAdapter(api_key=os.getenv("KISI_API_KEY", "test"), api_secret=os.getenv("KISI_API_SECRET", "test")))
 access_grant_service.register_adapter("schlage", SchlageAdapter(api_key=os.getenv("SCHLAGE_API_KEY", "test")))
-access_grant_service.register_adapter("generic", GenericQRAdapter(secret_key=os.getenv("JWT_SECRET_KEY", "supersecretkey")))
+# Get JWT secret from environment, fail if not set
+jwt_secret = os.getenv("JWT_SECRET_KEY")
+if not jwt_secret:
+    raise RuntimeError("JWT_SECRET_KEY environment variable is required but not set")
+access_grant_service.register_adapter("generic", GenericQRAdapter(secret_key=jwt_secret))
 
 
 # Add the access grant service to the app state so it can be accessed by other components

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-import jwt
+from jose import jwt
+from jose.exceptions import JWTError
 import hashlib
 import secrets
 from passlib.context import CryptContext
@@ -13,7 +14,10 @@ from pydantic import BaseModel
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT settings
-SECRET_KEY = "your-secret-key-change-in-production"  # This should be in environment variables
+import os
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY environment variable is required but not set")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -86,26 +90,35 @@ class AuthService:
                 return None
             scopes = payload.get("scopes", [])
             return TokenData(username=username, scopes=scopes)
-        except jwt.JWTError:
+        except JWTError:
             return None
     
     def get_current_user(
-        self, 
+        self,
         credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
     ) -> User:
         """
         Get the current authenticated user
         """
         token = credentials.credentials
+
+        # Check if token is blacklisted
+        if token_manager.is_token_blacklisted(token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         token_data = self.decode_token(token)
-        
+
         if token_data is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         user = self.get_user(username=token_data.username)
         if user is None:
             raise HTTPException(
@@ -113,14 +126,14 @@ class AuthService:
                 detail="User not found",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         if user.get("disabled", False):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Inactive user",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         return User(**user)
     
     def get_current_active_user(self, current_user: User = Depends(get_current_user)) -> User:
@@ -165,11 +178,11 @@ class RoleChecker:
     """
     Authorization checker based on user roles
     """
-    
+
     def __init__(self, allowed_roles: list):
         self.allowed_roles = allowed_roles
-    
-    def __call__(self, user: User = Depends(AuthService().get_current_user)):
+
+    def __call__(self, user: User = Depends(get_current_user)):
         if user.role not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -224,12 +237,12 @@ class PermissionChecker:
                 "view_reports", "process_claims"
             ],
             "platform_operator": [
-                "read_anything", "manage_policies", 
+                "read_anything", "manage_policies",
                 "view_reports", "process_claims"
             ],
             "space_owner": [
                 "read_own_spaces", "create_envelopes_for_own_spaces",
-                "read_own_envelopes", "manage_own_stewards"
+                "read_own_envelopes", "manage_own_stewards", "manage_own_spaces"
             ],
             "steward": [
                 "read_assigned_envelopes", "create_incident_reports",
