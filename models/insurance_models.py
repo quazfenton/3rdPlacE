@@ -1,24 +1,91 @@
 from sqlalchemy import Column, Integer, String, DateTime, Numeric, Boolean, Text, ForeignKey, CheckConstraint
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.types import TypeDecorator, CHAR
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
-from config.database import Base
+from config.database import Base, engine
+
+# Cross-platform UUID type that works with both PostgreSQL and SQLite
+class UUID(TypeDecorator):
+    """Platform-independent UUID type.
+    Uses PostgreSQL's UUID type when available, otherwise uses CHAR(32).
+    """
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(PGUUID(as_uuid=True))
+        else:
+            return dialect.type_descriptor(CHAR(32))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        elif dialect.name == 'postgresql':
+            return str(value)
+        else:
+            if not isinstance(value, uuid.UUID):
+                return "%032x" % uuid.UUID(value).int
+            return "%032x" % value.int
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        else:
+            if not isinstance(value, uuid.UUID):
+                value = uuid.UUID(value)
+            return value
+
+
+# Cross-platform JSONB type
+try:
+    from sqlalchemy.dialects.postgresql import JSONB as PGJSONB
+except ImportError:
+    PGJSONB = None
+
+class JSONB(TypeDecorator):
+    """Platform-independent JSONB type.
+    Uses PostgreSQL's JSONB when available, otherwise uses Text with JSON.
+    """
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql' and PGJSONB:
+            return dialect.type_descriptor(PGJSONB())
+        else:
+            return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        import json
+        return json.dumps(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        import json
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
 
 
 class PolicyRoot(Base):
     __tablename__ = "policy_root"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
     insurer_name = Column(String, nullable=False)
     policy_number = Column(String, nullable=False)
     jurisdiction = Column(String, nullable=False)  # e.g. "US-CA"
     effective_from = Column(DateTime(timezone=True), nullable=False)
     effective_until = Column(DateTime(timezone=True), nullable=False)
-    activity_classes = Column(MutableDict.as_mutable(JSONB), nullable=False)
-    base_limits = Column(MutableDict.as_mutable(JSONB), nullable=False)
-    exclusions = Column(MutableDict.as_mutable(JSONB))
+    activity_classes = Column(MutableDict.as_mutable(JSONB), nullable=False, default=dict)
+    base_limits = Column(MutableDict.as_mutable(JSONB), nullable=False, default=dict)
+    exclusions = Column(MutableDict.as_mutable(JSONB), default=dict)
     status = Column(String, nullable=False)  # active, expired, suspended
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -33,12 +100,12 @@ class PolicyRoot(Base):
 class ActivityClass(Base):
     __tablename__ = "activity_class"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
     slug = Column(String, unique=True, nullable=False)  # passive, light_physical, tool_based
     description = Column(Text)
     base_risk_score = Column(Numeric(3, 2), default=0.00)  # 0.00–1.00
-    default_limits = Column(MutableDict.as_mutable(JSONB))
-    prohibited_equipment = Column(MutableDict.as_mutable(JSONB), default=list)
+    default_limits = Column(MutableDict.as_mutable(JSONB), default=dict)
+    prohibited_equipment = Column(MutableDict.as_mutable(JSONB), default=dict)
     allows_alcohol = Column(Boolean, default=False)
     allows_minors = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -47,14 +114,14 @@ class ActivityClass(Base):
 class SpaceRiskProfile(Base):
     __tablename__ = "space_risk_profile"
 
-    space_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    space_id = Column(UUID(), primary_key=True, default=uuid.uuid4)
     hazard_rating = Column(Numeric(3, 2), default=0.00)  # 0.00–1.00
     floor_type = Column(String)
     stairs = Column(Boolean, default=False)
     tools_present = Column(Boolean, default=False)
     fire_suppression = Column(Boolean, default=False)
     prior_claims = Column(Integer, default=0)
-    restrictions = Column(MutableDict.as_mutable(JSONB))
+    restrictions = Column(MutableDict.as_mutable(JSONB), default=dict)
     last_inspected_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -62,14 +129,14 @@ class SpaceRiskProfile(Base):
 class InsuranceEnvelope(Base):
     __tablename__ = "insurance_envelope"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    policy_root_id = Column(UUID(as_uuid=True), ForeignKey("policy_root.id"), nullable=False)
-    activity_class_id = Column(UUID(as_uuid=True), ForeignKey("activity_class.id"), nullable=False)
-    space_id = Column(UUID(as_uuid=True), ForeignKey("space_risk_profile.space_id"), nullable=False)
-    steward_id = Column(UUID(as_uuid=True), nullable=False)
-    platform_entity_id = Column(UUID(as_uuid=True), nullable=False)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
+    policy_root_id = Column(UUID(), ForeignKey("policy_root.id"), nullable=False)
+    activity_class_id = Column(UUID(), ForeignKey("activity_class.id"), nullable=False)
+    space_id = Column(UUID(), ForeignKey("space_risk_profile.space_id"), nullable=False)
+    steward_id = Column(UUID(), nullable=False)
+    platform_entity_id = Column(UUID(), nullable=False)
 
-    event_metadata = Column(MutableDict.as_mutable(JSONB))  # declared activity, equipment, notes
+    event_metadata = Column(MutableDict.as_mutable(JSONB), default=dict)  # declared activity, equipment, notes
 
     attendance_cap = Column(Integer, nullable=False)
     duration_minutes = Column(Integer, nullable=False)
@@ -77,8 +144,8 @@ class InsuranceEnvelope(Base):
     alcohol = Column(Boolean, default=False)
     minors_present = Column(Boolean, default=False)
 
-    coverage_limits = Column(MutableDict.as_mutable(JSONB))
-    exclusions = Column(MutableDict.as_mutable(JSONB))
+    coverage_limits = Column(MutableDict.as_mutable(JSONB), default=dict)
+    exclusions = Column(MutableDict.as_mutable(JSONB), default=dict)
 
     jurisdiction = Column(String, nullable=False)
 
@@ -107,8 +174,8 @@ class InsuranceEnvelope(Base):
 class InsurancePricing(Base):
     __tablename__ = "insurance_pricing"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    envelope_id = Column(UUID(as_uuid=True), ForeignKey("insurance_envelope.id"), nullable=False)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
+    envelope_id = Column(UUID(), ForeignKey("insurance_envelope.id"), nullable=False)
     base_rate = Column(Numeric(10, 2), nullable=False)
     duration_factor = Column(Numeric(5, 2), default=1.00)
     attendance_factor = Column(Numeric(5, 2), default=1.00)
@@ -121,22 +188,22 @@ class InsurancePricing(Base):
 class IncidentReport(Base):
     __tablename__ = "incident_report"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    envelope_id = Column(UUID(as_uuid=True), ForeignKey("insurance_envelope.id"), nullable=False)
-    reported_by = Column(UUID(as_uuid=True), nullable=False)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
+    envelope_id = Column(UUID(), ForeignKey("insurance_envelope.id"), nullable=False)
+    reported_by = Column(UUID(), nullable=False)
     incident_type = Column(String, nullable=False)  # injury, property, behavioral
     severity = Column(String, nullable=False)  # low, medium, high
     description = Column(Text)
     occurred_at = Column(DateTime(timezone=True), nullable=False)
-    evidence_urls = Column(MutableDict.as_mutable(JSONB), default=list)
+    evidence_urls = Column(MutableDict.as_mutable(JSONB), default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Claim(Base):
     __tablename__ = "claim"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    envelope_id = Column(UUID(as_uuid=True), ForeignKey("insurance_envelope.id"), nullable=False)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
+    envelope_id = Column(UUID(), ForeignKey("insurance_envelope.id"), nullable=False)
     claimant_type = Column(String, nullable=False)  # space_owner, participant, platform
     status = Column(String, default='opened')  # opened, under_review, approved, denied, paid
     payout_amount = Column(Numeric(10, 2))
@@ -155,8 +222,8 @@ class Claim(Base):
 class AccessGrant(Base):
     __tablename__ = "access_grant"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    envelope_id = Column(UUID(as_uuid=True), ForeignKey("insurance_envelope.id"), nullable=False)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
+    envelope_id = Column(UUID(), ForeignKey("insurance_envelope.id"), nullable=False)
     lock_id = Column(String, nullable=False)
     access_type = Column(String, nullable=False)  # qr, pin, bluetooth, api_unlock
 
