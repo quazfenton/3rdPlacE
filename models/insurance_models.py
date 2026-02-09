@@ -133,8 +133,8 @@ class InsuranceEnvelope(Base):
     policy_root_id = Column(UUID(), ForeignKey("policy_root.id"), nullable=False)
     activity_class_id = Column(UUID(), ForeignKey("activity_class.id"), nullable=False)
     space_id = Column(UUID(), ForeignKey("space_risk_profile.space_id"), nullable=False)
-    steward_id = Column(UUID(), nullable=False)
-    platform_entity_id = Column(UUID(), nullable=False)
+    steward_id = Column(String, nullable=False)
+    platform_entity_id = Column(String, nullable=False)
 
     event_metadata = Column(MutableDict.as_mutable(JSONB), default=dict)  # declared activity, equipment, notes
 
@@ -190,7 +190,7 @@ class IncidentReport(Base):
 
     id = Column(UUID(), primary_key=True, default=uuid.uuid4)
     envelope_id = Column(UUID(), ForeignKey("insurance_envelope.id"), nullable=False)
-    reported_by = Column(UUID(), nullable=False)
+    reported_by = Column(String, nullable=False)
     incident_type = Column(String, nullable=False)  # injury, property, behavioral
     severity = Column(String, nullable=False)  # low, medium, high
     description = Column(Text)
@@ -208,6 +208,7 @@ class Claim(Base):
     status = Column(String, default='opened')  # opened, under_review, approved, denied, paid
     payout_amount = Column(Numeric(10, 2))
     insurer_reference = Column(String)
+    description = Column(Text, default="")
     opened_at = Column(DateTime(timezone=True), server_default=func.now())
     closed_at = Column(DateTime(timezone=True))
 

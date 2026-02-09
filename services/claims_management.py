@@ -19,13 +19,13 @@ class IncidentReportingService:
         severity: str,
         description: str,
         occurred_at: datetime,
-        evidence_urls: Optional[List[str]] = None
+        evidence_urls: Optional[Dict[str, str]] = None
     ) -> IncidentReport:
         """
         Create a new incident report
         """
         if evidence_urls is None:
-            evidence_urls = []
+            evidence_urls = {}
         
         # Validate inputs
         valid_types = ['injury', 'property', 'behavioral']

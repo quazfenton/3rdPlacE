@@ -23,7 +23,8 @@ class InsuranceEnvelopeService:
         valid_until: datetime,
         event_metadata: Optional[Dict[str, Any]] = None,
         alcohol: bool = False,
-        minors_present: bool = False
+        minors_present: bool = False,
+        jurisdiction: Optional[str] = None
     ) -> InsuranceEnvelope:
         """
         Create a new insurance envelope with validation
@@ -73,7 +74,7 @@ class InsuranceEnvelopeService:
             duration_minutes=duration_minutes,
             alcohol=alcohol,
             minors_present=minors_present,
-            jurisdiction=policy_root.jurisdiction,
+            jurisdiction=jurisdiction or policy_root.jurisdiction,
             valid_from=valid_from,
             valid_until=valid_until,
             status='pending'  # Will be activated after additional checks
@@ -239,9 +240,21 @@ class InsuranceEnvelopeService:
             return False
 
         # Check time validity - allow activation if valid_from is in future or currently valid
+        # Convert naive datetimes to timezone-aware if needed
         from datetime import timezone
         now = datetime.now(timezone.utc)
-        if envelope.valid_from <= envelope.valid_until and now <= envelope.valid_until:
+        
+        # Make sure envelope datetimes are timezone-aware
+        valid_from = envelope.valid_from
+        valid_until = envelope.valid_until
+        
+        if valid_from.tzinfo is None:
+            # Assume UTC for naive datetimes
+            valid_from = valid_from.replace(tzinfo=timezone.utc)
+        if valid_until.tzinfo is None:
+            valid_until = valid_until.replace(tzinfo=timezone.utc)
+            
+        if valid_from <= valid_until and now <= valid_until:
             return True
 
         return False
