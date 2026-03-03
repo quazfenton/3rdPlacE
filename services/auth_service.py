@@ -103,7 +103,7 @@ class AuthService:
         token = credentials.credentials
 
         # Check if token is blacklisted
-        if token_manager.is_token_blacklisted(token):
+        if self.is_token_blacklisted(token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token has been revoked",
@@ -269,17 +269,17 @@ class TokenManager:
     """
     Manager for handling token lifecycle (creation, validation, revocation)
     """
-    
+
     def __init__(self):
         self.blacklisted_tokens = set()
-    
+
     def blacklist_token(self, token: str):
         """
         Add a token to the blacklist (for logout functionality)
         """
         self.blacklisted_tokens.add(hashlib.sha256(token.encode()).hexdigest())
-    
-    def is_token_blacklisted(self, token: str) -> bool:
+
+    def is_blacklisted(self, token: str) -> bool:
         """
         Check if a token is blacklisted
         """
@@ -290,6 +290,11 @@ class TokenManager:
 # Initialize services
 auth_service = AuthService()
 token_manager = TokenManager()
+
+
+# Add the blacklist methods to AuthService for compatibility
+AuthService.is_token_blacklisted = lambda self, token: token_manager.is_blacklisted(token)
+AuthService.blacklist_token = lambda self, token: token_manager.blacklist_token(token)
 
 
 # Utility functions for API routes

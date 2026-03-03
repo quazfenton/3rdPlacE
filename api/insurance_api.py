@@ -13,12 +13,74 @@ from services.auth_service import get_current_active_user, User
 from utils.exceptions import ValidationError, InsuranceValidationError, CoverageError, ClassificationError
 
 
-# Initialize FastAPI app
-app = FastAPI(title="Third Place Insurance Abstraction Layer", version="1.0.0")
+# Initialize FastAPI app with enhanced documentation
+app = FastAPI(
+    title="Third Place Insurance Abstraction Layer",
+    version="1.0.0",
+    description="""
+## Overview
+
+The Insurance Abstraction Layer (IAL) provides comprehensive insurance coverage management for physical community spaces.
+
+### Key Features
+
+- **Activity Classification**: Automatically classify activities and assess risk levels
+- **Dynamic Pricing**: Calculate insurance premiums based on multiple risk factors
+- **Envelope Management**: Create and manage insurance coverage envelopes
+- **Coverage Verification**: Real-time verification of active coverage
+- **Emergency Revocation**: Void coverage when necessary
+
+### Authentication
+
+All endpoints require JWT authentication. Include your token in the Authorization header:
+```
+Authorization: Bearer <your-token>
+```
+
+### Rate Limiting
+
+API endpoints are rate-limited to ensure fair usage:
+- Authentication endpoints: 5 requests/minute
+- Standard operations: 100 requests/minute
+- Heavy operations: 10 requests/minute
+    """,
+    contact={
+        "name": "Third Place Platform Support",
+        "email": "support@thirdplace.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+# Add OpenAPI tags for better organization
+app.openapi_tags = [
+    {
+        "name": "insurance",
+        "description": "Insurance envelope management operations",
+    },
+    {
+        "name": "Activity Classification",
+        "description": "Classify activities and determine risk profiles",
+    },
+    {
+        "name": "Pricing",
+        "description": "Get insurance pricing quotes",
+    },
+    {
+        "name": "Coverage",
+        "description": "Verify and manage coverage status",
+    },
+]
 
 
-# Pydantic models for request/response
+# Pydantic models for request/response with enhanced validation
 class ClassifyActivityRequest(BaseModel):
+    """Request model for activity classification"""
     space_id: str
     declared_activity: str
     equipment: Optional[list] = []
@@ -28,6 +90,7 @@ class ClassifyActivityRequest(BaseModel):
 
 
 class ClassifyActivityResult(BaseModel):
+    """Response model for activity classification"""
     activity_class: str
     risk_score: float
     allowed: bool
@@ -36,6 +99,7 @@ class ClassifyActivityResult(BaseModel):
 
 
 class QuotePricingRequest(BaseModel):
+    """Request model for insurance pricing quote"""
     activity_class_id: str
     space_id: str
     attendance_cap: int
@@ -44,12 +108,14 @@ class QuotePricingRequest(BaseModel):
 
 
 class QuotePricingResult(BaseModel):
+    """Response model for insurance pricing quote"""
     price: float
     currency: str
     breakdown: Dict[str, float]
 
 
 class CreateEnvelopeRequest(BaseModel):
+    """Request model for creating an insurance envelope"""
     policy_root_id: str
     activity_class_id: str
     space_id: str
@@ -65,18 +131,45 @@ class CreateEnvelopeRequest(BaseModel):
 
 
 class CreateEnvelopeResult(BaseModel):
+    """Response model for created insurance envelope"""
     envelope_id: str
     status: str
     certificate_url: str
 
 
 class VerifyCoverageResult(BaseModel):
+    """Response model for coverage verification"""
     valid: bool
     coverage_limits: Dict[str, Any]
     valid_until: datetime
 
 
-@app.post("/ial/activity/classify", response_model=ClassifyActivityResult)
+@app.post(
+    "/ial/activity/classify",
+    response_model=ClassifyActivityResult,
+    tags=["Activity Classification"],
+    summary="Classify an activity",
+    description="""
+Classify a declared activity and determine its risk profile.
+
+This endpoint analyzes:
+- **Activity type**: Matches against known activity patterns
+- **Equipment**: Assesses risk from tools/equipment used
+- **Alcohol**: Whether alcohol is present (affects classification)
+- **Minors**: Whether minors will be present
+- **Attendance**: Number of expected participants
+
+**Risk Classes:**
+- `passive`: Low risk (board games, reading, discussions)
+- `light_physical`: Medium risk (yoga, dance, cooking)
+- `tool_based`: Higher risk (woodworking, repairs)
+    """,
+    responses={
+        200: {"description": "Activity classified successfully"},
+        400: {"description": "Invalid activity or space configuration"},
+        500: {"description": "Internal server error"},
+    }
+)
 async def classify_activity(request: ClassifyActivityRequest, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Classify an activity and determine its risk profile
@@ -111,7 +204,32 @@ async def classify_activity(request: ClassifyActivityRequest, current_user: User
         ) from e
 
 
-@app.post("/ial/pricing/quote", response_model=QuotePricingResult)
+@app.post(
+    "/ial/pricing/quote",
+    response_model=QuotePricingResult,
+    tags=["Pricing"],
+    summary="Get insurance pricing quote",
+    description="""
+Calculate insurance premium for a specific coverage scenario.
+
+**Pricing Factors:**
+- **Activity Class**: Base rate determined by risk level
+- **Duration**: Longer events cost more (with diminishing returns)
+- **Attendance**: Higher attendance increases premium
+- **Jurisdiction**: Regional regulations affect pricing
+- **Space Risk**: Hazard rating of the venue
+
+**Base Rates:**
+- Passive activities: $10.00
+- Light physical: $15.00
+- Tool-based: $25.00
+    """,
+    responses={
+        200: {"description": "Pricing quote generated successfully"},
+        400: {"description": "Invalid pricing parameters"},
+        500: {"description": "Internal server error"},
+    }
+)
 async def quote_pricing(request: QuotePricingRequest, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Get a pricing quote for insurance coverage
@@ -143,7 +261,35 @@ async def quote_pricing(request: QuotePricingRequest, current_user: User = Depen
         ) from e
 
 
-@app.post("/ial/envelopes", response_model=CreateEnvelopeResult)
+@app.post(
+    "/ial/envelopes",
+    response_model=CreateEnvelopeResult,
+    tags=["insurance"],
+    summary="Create insurance envelope",
+    description="""
+Create a new insurance coverage envelope for a physical gathering.
+
+An insurance envelope is the atomic unit of coverage that wraps a specific gathering.
+
+**Requirements:**
+- Active policy root
+- Valid activity class
+- Space risk profile
+- Future valid_from date (max 12 hours duration)
+
+**Process:**
+1. Validates all inputs
+2. Checks policy, activity class, and space exist
+3. Validates activity compliance (alcohol/minors restrictions)
+4. Creates envelope with 'pending' status
+5. Automatically activates envelope and generates certificate
+    """,
+    responses={
+        200: {"description": "Envelope created and activated successfully"},
+        400: {"description": "Validation error - invalid inputs or restrictions violated"},
+        500: {"description": "Internal server error"},
+    }
+)
 async def create_insurance_envelope(request: CreateEnvelopeRequest, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Create a new insurance envelope
@@ -182,7 +328,30 @@ async def create_insurance_envelope(request: CreateEnvelopeRequest, current_user
         ) from e
 
 
-@app.get("/ial/envelopes/{envelope_id}/verify", response_model=VerifyCoverageResult)
+@app.get(
+    "/ial/envelopes/{envelope_id}/verify",
+    response_model=VerifyCoverageResult,
+    tags=["Coverage"],
+    summary="Verify coverage",
+    description="""
+Verify if an insurance envelope is currently valid and active.
+
+**Validation Checks:**
+- Envelope exists and is in 'active' status
+- Current time is within valid_from and valid_until window
+- Envelope has not been voided or expired
+
+**Use Cases:**
+- Pre-event coverage verification
+- Access control integration
+- Real-time coverage status checks
+    """,
+    responses={
+        200: {"description": "Coverage verification result"},
+        400: {"description": "Invalid envelope ID"},
+        500: {"description": "Internal server error"},
+    }
+)
 async def verify_coverage(envelope_id: str, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Verify if an insurance envelope is valid
@@ -214,7 +383,35 @@ async def verify_coverage(envelope_id: str, current_user: User = Depends(get_cur
         ) from e
 
 
-@app.post("/ial/envelopes/{envelope_id}/void")
+@app.post(
+    "/ial/envelopes/{envelope_id}/void",
+    tags=["Coverage"],
+    summary="Void insurance envelope",
+    description="""
+Void/deactivate an insurance envelope.
+
+**Important:**
+- Voiding an envelope immediately revokes all associated access grants
+- This action cannot be undone
+- A reason must be provided for audit purposes
+
+**Common Reasons:**
+- Safety incident
+- Capacity violation
+- Policy violation
+- Emergency situation
+
+**Side Effects:**
+- All active access grants are revoked
+- Lock systems are notified (if integrated)
+- Audit log entry is created
+    """,
+    responses={
+        200: {"description": "Envelope voided successfully"},
+        400: {"description": "Invalid envelope ID or already voided"},
+        500: {"description": "Internal server error"},
+    }
+)
 async def void_envelope(envelope_id: str, reason: str, current_user: User = Depends(get_current_active_user), db=Depends(get_db)):
     """
     Void an insurance envelope

@@ -246,7 +246,23 @@ class ActivityClassificationEngine:
         # Query all activity classes ordered by risk threshold
         classes = db.query(ActivityClass).order_by(ActivityClass.base_risk_score).all()
 
-        # Find the first class that accommodates the risk level and constraints
+        # First, try to find a class that matches the suggested slug exactly
+        # This preserves the original intent of the activity classification
+        suggested_slug = ActivityClassificationEngine._determine_base_class_slug_from_risk(risk_score)
+        exact_match = db.query(ActivityClass).filter(
+            ActivityClass.slug == suggested_slug
+        ).first()
+
+        if exact_match:
+            # Check if the exact match accommodates the constraints
+            if (not alcohol or exact_match.allows_alcohol) and (not minors_present or exact_match.allows_minors):
+                return exact_match
+            else:
+                # The exact match doesn't allow the constraints - return it anyway
+                # so that violations can be properly reported
+                return exact_match
+
+        # If no exact match, find the first class that accommodates the risk level and constraints
         for cls in classes:
             # Check if risk score fits within class range (with some tolerance)
             threshold = float(cls.base_risk_score) + 0.3 if cls.base_risk_score is not None else 1.0
@@ -266,6 +282,18 @@ class ActivityClassificationEngine:
                 return cls
 
         return None
+
+    @staticmethod
+    def _determine_base_class_slug_from_risk(risk_score: float) -> str:
+        """
+        Determine the base activity class slug based on risk score
+        """
+        if risk_score <= 0.3:
+            return 'passive'
+        elif risk_score <= 0.6:
+            return 'light_physical'
+        else:
+            return 'tool_based'
 
     @staticmethod
     def _validate_against_class(

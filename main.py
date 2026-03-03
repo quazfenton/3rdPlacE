@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from config.database import engine, Base
 from api.insurance_api import app as insurance_api
 from services.lock_integration import AccessGrantService, KisiAdapter, SchlageAdapter, GenericQRAdapter
+from middleware.rate_limiter import setup_rate_limiting, limiter
 import uvicorn
 import os
 
@@ -12,6 +13,8 @@ import os
 async def lifespan(app: FastAPI):
     # Startup
     Base.metadata.create_all(bind=engine)
+    # Setup rate limiting
+    setup_rate_limiting(app)
     yield
     # Shutdown
 
