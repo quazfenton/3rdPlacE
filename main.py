@@ -1,11 +1,19 @@
 from fastapi import FastAPI, Depends
 from contextlib import asynccontextmanager
 from config.database import engine, Base
-from api.insurance_api import app as insurance_api
+from api.insurance_api import router as insurance_router
 from services.lock_integration import AccessGrantService, KisiAdapter, SchlageAdapter, GenericQRAdapter
-from middleware.rate_limiter import setup_rate_limiting, limiter
 import uvicorn
 import os
+
+# Try to import rate limiting middleware (optional)
+try:
+    from middleware.rate_limiter import setup_rate_limiting, limiter
+    RATE_LIMITING_ENABLED = True
+except ImportError:
+    RATE_LIMITING_ENABLED = False
+    def setup_rate_limiting(app):
+        pass  # No-op if slowapi not installed
 
 
 # Create database tables
@@ -28,7 +36,7 @@ app = FastAPI(
 )
 
 # Include the insurance API routes
-app.include_router(insurance_api, prefix="/api/v1", tags=["insurance"])
+app.include_router(insurance_router, prefix="/api/v1", tags=["insurance"])
 
 # Add a main health check endpoint
 @app.get("/")

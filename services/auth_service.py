@@ -135,15 +135,7 @@ class AuthService:
             )
 
         return User(**user)
-    
-    def get_current_active_user(self, current_user: User = Depends(get_current_user)) -> User:
-        """
-        Get the current active user
-        """
-        if current_user.disabled:
-            raise HTTPException(status_code=400, detail="Inactive user")
-        return current_user
-    
+
     def get_user(self, username: str) -> Optional[dict]:
         """
         Retrieve a user from the database
@@ -182,7 +174,7 @@ class RoleChecker:
     def __init__(self, allowed_roles: list):
         self.allowed_roles = allowed_roles
 
-    def __call__(self, user: User = Depends(get_current_user)):
+    def __call__(self, user: User = Depends(AuthService().get_current_user)):
         if user.role not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -298,6 +290,15 @@ AuthService.blacklist_token = lambda self, token: token_manager.blacklist_token(
 
 
 # Utility functions for API routes
+def get_current_active_user(current_user: User = Depends(auth_service.get_current_user)) -> User:
+    """
+    Get the current active user (dependency for FastAPI routes)
+    """
+    if current_user.disabled:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+
 def get_current_admin_user(current_user: User = Depends(auth_service.get_current_user)):
     """
     Dependency to get current user with admin role

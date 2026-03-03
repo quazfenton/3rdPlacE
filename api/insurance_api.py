@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 import uuid
 
@@ -13,52 +13,14 @@ from services.auth_service import get_current_active_user, User
 from utils.exceptions import ValidationError, InsuranceValidationError, CoverageError, ClassificationError
 
 
-# Initialize FastAPI app with enhanced documentation
-app = FastAPI(
-    title="Third Place Insurance Abstraction Layer",
-    version="1.0.0",
-    description="""
-## Overview
-
-The Insurance Abstraction Layer (IAL) provides comprehensive insurance coverage management for physical community spaces.
-
-### Key Features
-
-- **Activity Classification**: Automatically classify activities and assess risk levels
-- **Dynamic Pricing**: Calculate insurance premiums based on multiple risk factors
-- **Envelope Management**: Create and manage insurance coverage envelopes
-- **Coverage Verification**: Real-time verification of active coverage
-- **Emergency Revocation**: Void coverage when necessary
-
-### Authentication
-
-All endpoints require JWT authentication. Include your token in the Authorization header:
-```
-Authorization: Bearer <your-token>
-```
-
-### Rate Limiting
-
-API endpoints are rate-limited to ensure fair usage:
-- Authentication endpoints: 5 requests/minute
-- Standard operations: 100 requests/minute
-- Heavy operations: 10 requests/minute
-    """,
-    contact={
-        "name": "Third Place Platform Support",
-        "email": "support@thirdplace.com",
-    },
-    license_info={
-        "name": "MIT License",
-        "url": "https://opensource.org/licenses/MIT",
-    },
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json"
+# Initialize APIRouter with enhanced documentation
+router = APIRouter(
+    prefix="/ial",
+    tags=["insurance"]
 )
 
 # Add OpenAPI tags for better organization
-app.openapi_tags = [
+router.openapi_tags = [
     {
         "name": "insurance",
         "description": "Insurance envelope management operations",
@@ -144,7 +106,7 @@ class VerifyCoverageResult(BaseModel):
     valid_until: datetime
 
 
-@app.post(
+@router.post(
     "/ial/activity/classify",
     response_model=ClassifyActivityResult,
     tags=["Activity Classification"],
@@ -204,7 +166,7 @@ async def classify_activity(request: ClassifyActivityRequest, current_user: User
         ) from e
 
 
-@app.post(
+@router.post(
     "/ial/pricing/quote",
     response_model=QuotePricingResult,
     tags=["Pricing"],
@@ -261,7 +223,7 @@ async def quote_pricing(request: QuotePricingRequest, current_user: User = Depen
         ) from e
 
 
-@app.post(
+@router.post(
     "/ial/envelopes",
     response_model=CreateEnvelopeResult,
     tags=["insurance"],
@@ -328,7 +290,7 @@ async def create_insurance_envelope(request: CreateEnvelopeRequest, current_user
         ) from e
 
 
-@app.get(
+@router.get(
     "/ial/envelopes/{envelope_id}/verify",
     response_model=VerifyCoverageResult,
     tags=["Coverage"],
@@ -383,7 +345,7 @@ async def verify_coverage(envelope_id: str, current_user: User = Depends(get_cur
         ) from e
 
 
-@app.post(
+@router.post(
     "/ial/envelopes/{envelope_id}/void",
     tags=["Coverage"],
     summary="Void insurance envelope",
@@ -437,7 +399,7 @@ async def void_envelope(envelope_id: str, reason: str, current_user: User = Depe
 
 
 # Health check endpoint
-@app.get("/health")
+@router.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "Insurance Abstraction Layer"}
 
