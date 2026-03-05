@@ -518,16 +518,76 @@ def track_request(endpoint_name: str):
         @wraps(func)
         async def wrapper(*args, **kwargs):
             start_time = time.time()
+            method = "UNKNOWN"
+            for arg in args:
+                if hasattr(arg, 'method'):
+                    method = arg.method
+                    break
+            
             try:
+                if metrics.enabled:
+                    metrics.http_requests_in_progress.labels(
+                        method=method, endpoint=endpoint_name
+                    ).inc()
+                
                 result = await func(*args, **kwargs)
+                
+                if metrics.enabled:
+                    status = 200
+                    if hasattr(result, 'status_code'):
+                        status = result.status_code
+                    
+                    duration = time.time() - start_time
+                    metrics.track_http_request(
+                        method=method,
+                        endpoint=endpoint_name,
+                        status=status,
+                        duration=duration
+                    )
                 return result
             except Exception as e:
                 if metrics.enabled:
                     metrics.track_exception(type(e).__name__, endpoint_name)
+                    metrics.http_requests_total.labels(
+                        method=method, endpoint=endpoint_name, status=500
+                    ).inc()
                 raise
             finally:
-                duration = time.time() - start_time
-                # Additional tracking can be added here
+                if metrics.enabled:
+                    metrics.http_requests_in_progress.labels(
+                        method=method, endpoint=endpoint_name
+                    ).dec()
+        return wrapper
+    return decorator
+
+
+@contextmanager
+def track_duration(metric_name: str, **labels):
+    """
+    Context manager to track operation duration
+    
+    Usage:
+        with track_duration("envelope_creation_time"):
+            create_envelope(...)
+    """
+    start_time = time.time()
+    try:
+        yield
+    finally:
+        if metrics.enabled:
+            duration = time.time() - start_time
+            metric = getattr(metrics, metric_name, None)
+            if metric and hasattr(metric, 'observe'):
+                if labels:
+                    metric.labels(**labels).observe(duration)
+                else:
+                    metric.observe(duration)
+            elif metric and hasattr(metric, 'set'):
+                if labels:
+                    metric.labels(**labels).set(duration)
+                else:
+                    metric.set(duration)
+
         return wrapper
     return decorator
 

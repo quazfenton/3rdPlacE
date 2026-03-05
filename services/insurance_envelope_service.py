@@ -306,20 +306,20 @@ class InsuranceEnvelopeService:
         envelope = repos.envelopes.get_or_raise(envelope_id)
 
         # Get the associated access grant with row lock
-        active_grant = repos.access_grants.get_grant_for_update(
-            db.query(AccessGrant).filter(
-                AccessGrant.envelope_id == envelope_id,
-                AccessGrant.status == 'active'
-            ).first().id if db.query(AccessGrant).filter(
-                AccessGrant.envelope_id == envelope_id,
-                AccessGrant.status == 'active'
-            ).first() else None
-        ) if db.query(AccessGrant).filter(
+        grant_record = db.query(AccessGrant).filter(
             AccessGrant.envelope_id == envelope_id,
             AccessGrant.status == 'active'
-        ).first() else None
+        ).first()
 
-        if not active_grant:
+        if not grant_record:
+            return {
+                "capacity_available": True,
+                "current_attendance": 0,
+                "max_capacity": envelope.attendance_cap,
+                "remaining_capacity": envelope.attendance_cap
+            }
+
+        active_grant = repos.access_grants.get_grant_for_update(grant_record.id)
             return {
                 "capacity_available": True,
                 "current_attendance": 0,
