@@ -2,23 +2,100 @@ version: '3.8'
 
 services:
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
     ports:
       - "8000:8000"
     environment:
+      # Database
       - DATABASE_URL=sqlite:////data/thirdplace.db
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      
+      # JWT Configuration
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production-use-long-random-string}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      
+      # Lock Integration API Keys
       - KISI_API_KEY=${KISI_API_KEY:-}
       - KISI_API_SECRET=${KISI_API_SECRET:-}
       - SCHLAGE_API_KEY=${SCHLAGE_API_KEY:-}
+      
+      # CORS
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/logs/app.log
+      
+      # Server
+      - HOST=0.0.0.0
+      - PORT=8000
     volumes:
       - sqlite_data:/data
+      - app_logs:/logs
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
+    networks:
+      - thirdplace-network
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # PostgreSQL database (optional - for production use)
+  # Uncomment to use PostgreSQL instead of SQLite
+  # db:
+  #   image: postgres:15-alpine
+  #   environment:
+  #     - POSTGRES_USER=thirdplace
+  #     - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+  #     - POSTGRES_DB=thirdplace
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U thirdplace"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - thirdplace-network
+
+  # Redis for caching and rate limiting (optional)
+  # Uncomment to enable Redis-backed rate limiting
+  # redis:
+  #   image: redis:7-alpine
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - thirdplace-network
 
 volumes:
   sqlite_data:
+    driver: local
+  app_logs:
+    driver: local
+  # postgres_data:
+  #   driver: local
+  # redis_data:
+  #   driver: local
+
+networks:
+  thirdplace-network:
+    driver: bridge

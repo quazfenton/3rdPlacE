@@ -2,98 +2,127 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 jobs:
+  # Lint and Type Check
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install black flake8 isort mypy
+      
+      - name: Check formatting with black
+        run: black --check .
+      
+      - name: Check imports with isort
+        run: isort --check-only .
+      
+      - name: Lint with flake8
+        run: flake8 . --max-line-length=120 --extend-ignore=E203
+      
+      - name: Type check with mypy
+        run: mypy . --ignore-missing-imports --no-strict-optional
+
+  # Security Scan
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit safety
+      
+      - name: Run bandit security scan
+        run: bandit -r . -ll
+      
+      - name: Check dependencies with safety
+        run: safety check
+
+  # Unit Tests
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.10", "3.11"]
-
+    needs: [lint]
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests with coverage
+        run: |
+          pytest --cov=. --cov-report=xml --cov-fail-under=70
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Cache dependencies
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Lint with flake8
-      run: |
-        pip install flake8
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-      continue-on-error: true
-
-    - name: Test with pytest
-      run: |
-        cd 3rdPlace
-        python -m pytest tests/ -v --tb=short
-
+  # Build Docker Image
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/thirdplace:latest
+            ${{ secrets.DOCKER_USERNAME }}/thirdplace:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/thirdplace:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/thirdplace:buildcache,mode=max
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-      if: ${{ secrets.DOCKER_USERNAME && secrets.DOCKER_PASSWORD }}
-
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: 3rdPlace
-        push: ${{ secrets.DOCKER_USERNAME && secrets.DOCKER_PASSWORD }}
-        tags: ${{ secrets.DOCKER_USERNAME && format('{0}/thirdplace-platform:latest', secrets.DOCKER_USERNAME) || 'thirdplace-platform:latest' }}
-        cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME && format('{0}/thirdplace-platform:buildcache', secrets.DOCKER_USERNAME) || 'thirdplace-platform:buildcache' }}
-        cache-to: type=inline
-
-  security-scan:
+  # Deploy (placeholder - customize for your deployment target)
+  deploy:
     runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
-
-    - name: Install safety
-      run: pip install safety
-
-    - name: Check dependencies for vulnerabilities
-      run: safety check -r requirements.txt
-      continue-on-error: true
-
-    - name: Run Bandit security lint
-      run: |
-        pip install bandit
-        bandit -r 3rdPlace/ -ll
-      continue-on-error: true
+      - name: Deploy notification
+        run: |
+          echo "Deployment would happen here"
+          echo "Configure your deployment target (Kubernetes, ECS, etc.)"

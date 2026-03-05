@@ -1,15 +1,46 @@
+# Third Place Platform - Python Dependencies
+# Pinned versions for reproducibility
+
+# Web Framework
 fastapi==0.109.1
 uvicorn[standard]==0.24.0
+python-multipart==0.0.7
+
+# Database
 sqlalchemy==2.0.23
+alembic==1.13.1
+aiosqlite==0.19.0  # For SQLite async support
+
+# Validation
 pydantic==2.5.0
+pydantic[email]==2.5.0  # Email validation
+
+# Authentication & Security
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.7
+bcrypt==4.0.1
+
+# Rate Limiting
+slowapi==0.1.9
+
+# QR Code Generation
 qrcode[pil]==7.4.2
+Pillow==10.1.0
+
+# HTTP Client
 aiohttp==3.9.4
+
+# Environment
+python-dotenv==1.0.0
+
+# Testing
 pytest==7.4.3
 pytest-asyncio==0.21.1
-python-dotenv==1.0.0
-alembic==1.13.1
-aiosqlite==0.19.0
-slowapi==0.1.9
+pytest-cov==4.1.0
+httpx==0.25.2  # For async test client
+
+# Logging
+python-json-logger==2.0.7
+
+# Utilities
+tenacity==8.2.3  # Retry logic
