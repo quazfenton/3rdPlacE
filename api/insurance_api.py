@@ -14,7 +14,11 @@ from services.audit_service import AuditService
 from services.auth_service import get_current_active_user, User
 from services.domain_events import EventDispatcher, EventType
 from repositories.base_repository import RepositoryFactory
-from middleware.rate_limiter import standard_rate_limit, heavy_operation_rate_limit, read_rate_limit
+from models.insurance_models import InsuranceEnvelope
+from middleware.rate_limiter import (
+    standard_rate_limit, heavy_operation_rate_limit, read_rate_limit,
+    verify_rate_limit, void_envelope_rate_limit
+)
 from utils.exceptions import (
     ValidationError, InsuranceValidationError, CoverageError,
     ClassificationError, NotFoundError, ConflictError
@@ -357,21 +361,34 @@ async def list_envelopes(
 ):
     """
     List insurance envelopes with optional filters.
-    
+
     **Filters:**
     - `space_id`: Filter by space
     - `status`: Filter by status (pending, active, voided, expired, claim_open)
     - `steward_id`: Filter by steward
+    
+    **Performance:** Uses eager loading to prevent N+1 queries.
     """
-    repos = RepositoryFactory(db)
+    from sqlalchemy.orm import joinedload
     
+    # Build query with eager loading to prevent N+1 queries
+    query = db.query(InsuranceEnvelope).options(
+        joinedload(InsuranceEnvelope.policy_root),
+        joinedload(InsuranceEnvelope.activity_class),
+        joinedload(InsuranceEnvelope.space_profile)
+    )
+    
+    # Apply filters
     if space_id:
-        envelopes = repos.envelopes.get_envelopes_for_space(space_id, status)
-    elif steward_id:
-        envelopes = repos.envelopes.get_envelopes_for_steward(steward_id, status)
-    else:
-        envelopes = repos.envelopes.list(limit=limit, offset=offset)
+        query = query.filter(InsuranceEnvelope.space_id == space_id)
+    if status:
+        query = query.filter(InsuranceEnvelope.status == status)
+    if steward_id:
+        query = query.filter(InsuranceEnvelope.steward_id == steward_id)
     
+    # Apply pagination
+    envelopes = query.offset(offset).limit(limit).all()
+
     return [
         EnvelopeResponse(
             id=str(e.id),
@@ -426,7 +443,7 @@ async def get_envelope(
     response_model=VerifyCoverageResult,
     tags=["Coverage"]
 )
-@read_rate_limit
+@verify_rate_limit
 async def verify_coverage(
     envelope_id: str,
     current_user: User = Depends(get_current_active_user),
@@ -475,7 +492,7 @@ async def verify_coverage(
     "/envelopes/{envelope_id}/void",
     tags=["Coverage"]
 )
-@heavy_operation_rate_limit
+@void_envelope_rate_limit
 async def void_envelope(
     envelope_id: str,
     reason: str = Query(..., min_length=1, max_length=500),

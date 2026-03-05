@@ -380,6 +380,11 @@ class AccessGrantService:
 class KisiAdapter(LockAdapter):
     """
     Adapter for Kisi lock systems
+    
+    Features:
+    - Async HTTP with timeouts
+    - Automatic session management
+    - Graceful fallback on errors
     """
 
     def __init__(self, api_key: str, api_secret: str, base_url: str = "https://api.kisi.com"):
@@ -387,12 +392,15 @@ class KisiAdapter(LockAdapter):
         self.api_secret = api_secret
         self.base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
+        # Configure timeouts: 30s total, 10s connect, 30s socket read
+        self._timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=30)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 auth=aiohttp.BasicAuth(self.api_key, self.api_secret),
-                headers={"Accept": "application/json"}
+                headers={"Accept": "application/json"},
+                timeout=self._timeout  # Apply timeout configuration
             )
         return self._session
 
@@ -464,12 +472,19 @@ class KisiAdapter(LockAdapter):
 class SchlageAdapter(LockAdapter):
     """
     Adapter for Schlage keypad locks
+    
+    Features:
+    - Async HTTP with timeouts
+    - Secure PIN generation
+    - Automatic session management
     """
 
     def __init__(self, api_key: str, base_url: str = "https://api.allegion.io"):
         self.api_key = api_key
         self.base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
+        # Configure timeouts: 30s total, 10s connect, 30s socket read
+        self._timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=30)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -477,7 +492,8 @@ class SchlageAdapter(LockAdapter):
                 headers={
                     "Accept": "application/json",
                     "X-API-Key": self.api_key
-                }
+                },
+                timeout=self._timeout  # Apply timeout configuration
             )
         return self._session
 
