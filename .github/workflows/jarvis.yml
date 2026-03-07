@@ -1,4 +1,4 @@
-﻿name: ðŸ§  Autobot
+name: ðŸ§  Autobot
 on:
   pull_request:
     types: [labeled]
@@ -10,6 +10,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
 
     steps:
       - name: Checkout Full Repository
@@ -21,7 +22,7 @@ jobs:
       - name: Setup Python & Agent Tooling
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - name: Install Aider (Agent Engine)
         run: python -m pip install aider-chat
 
@@ -31,11 +32,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Grabs the last 100 lines of CodeRabbit feedback to give the agent its mission
-	  BOT_PATTERN="coderabbitai|qodo-code-review|cubic-dev-ai|codeant-ai"
-          
-          RAW_FEEDBACK=$(gh pr view ${{ inputs.pr_number }} --comments)
-          SUGGESTIONS=$(echo "$RAW_FEEDBACK" | grep -Ei -A 100 "$BOT_PATTERN" || echo "Review the suggestion if there is any for optimizations.")
-          
+          # SECURITY: Uses gh api to fetch only verified bot reviews, preventing prompt injection from malicious PR comments
+          # SECURITY: Anchored regex with optional [bot] suffix to prevent substring matches
+          BOT_PATTERN="^(coderabbitai|qodo-code-review|cubic-dev-ai|codeant-ai)(\\[bot\\])?$"
+
+          # Fetch only NEW unprocessed reviews from verified bot accounts
+          # Filters out reviews that already contain the agent applied marker
+          # Gets last 10 complete reviews (not line-count limited to avoid truncation)
+          RAW_FEEDBACK=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+            --jq '[.[] | select(.user.login | test("'"$BOT_PATTERN"'"; "i")) | select(.state == "COMMENTED" or .state == "CHANGES_REQUESTED") | select(.body | contains("Agent:") | not)] | .[-10:] | .[].body' \
+            | tac)
+          SUGGESTIONS=${RAW_FEEDBACK:-Review the suggestion if there is any for optimizations.}
+
           # Sanitize string for bash multiline
           echo "suggestions<<EOF" >> $GITHUB_OUTPUT
           echo "$SUGGESTIONS" >> $GITHUB_OUTPUT
@@ -46,7 +54,7 @@ jobs:
           FIX_BRANCH="ai-fixes-${{ github.head_ref }}"
           git config user.name "jarvis"
           git config user.email "fullmetal@solo-dev.internal"
-          
+
           # If the branch exists remotely, fetch it and hard reset to the current PR state
           if git ls-remote --heads origin $FIX_BRANCH | grep -q $FIX_BRANCH; then
             echo "Shadow branch exists. Syncing..."
@@ -101,7 +109,7 @@ jobs:
       - name: Commit and Force-Push Fixes
         run: |
           git add .
-          
+
           # Only commit and push if the Agent actually changed files
           if ! git diff-index --quiet HEAD; then
             git commit -m "ðŸ¤– Agent: Multi-iteration applied fixes & optimizations"
