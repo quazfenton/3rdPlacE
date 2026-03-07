@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Policy Root table - represents an insurer-backed master policy
 CREATE TABLE policy_root (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     insurer_name TEXT NOT NULL,
     policy_number TEXT NOT NULL,
     jurisdiction TEXT NOT NULL, -- e.g. "US-CA"
@@ -21,12 +21,12 @@ CREATE TABLE policy_root (
 
 -- Activity Class table - defines insurable activity categories
 CREATE TABLE activity_class (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     slug TEXT UNIQUE NOT NULL, -- passive, light_physical, tool_based
     description TEXT,
     base_risk_score NUMERIC(3,2) DEFAULT 0.00, -- 0.00–1.00
     default_limits JSONB,
-    prohibited_equipment TEXT[],
+    prohibited_equipment JSONB DEFAULT '[]'::jsonb,
     allows_alcohol BOOLEAN DEFAULT FALSE,
     allows_minors BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -34,7 +34,7 @@ CREATE TABLE activity_class (
 
 -- Space Risk Profile table - one per physical venue
 CREATE TABLE space_risk_profile (
-    space_id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    space_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     hazard_rating NUMERIC(3,2) DEFAULT 0.00, -- 0.00–1.00
     floor_type TEXT,
     stairs BOOLEAN DEFAULT FALSE,
@@ -48,7 +48,7 @@ CREATE TABLE space_risk_profile (
 
 -- Insurance Envelope table - the atomic unit of coverage
 CREATE TABLE insurance_envelope (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     policy_root_id UUID NOT NULL REFERENCES policy_root(id),
     activity_class_id UUID NOT NULL REFERENCES activity_class(id),
     space_id UUID NOT NULL REFERENCES space_risk_profile(space_id),
@@ -82,7 +82,7 @@ CREATE TABLE insurance_envelope (
 
 -- Insurance Pricing Snapshot table - immutable pricing decision
 CREATE TABLE insurance_pricing (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     envelope_id UUID NOT NULL REFERENCES insurance_envelope(id) ON DELETE CASCADE,
     base_rate NUMERIC(10,2) NOT NULL,
     duration_factor NUMERIC(5,2) NOT NULL DEFAULT 1.00,
@@ -95,7 +95,7 @@ CREATE TABLE insurance_pricing (
 
 -- Incident Report table - pre-claim signal
 CREATE TABLE incident_report (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     envelope_id UUID NOT NULL REFERENCES insurance_envelope(id) ON DELETE CASCADE,
     reported_by UUID NOT NULL,
     incident_type TEXT NOT NULL, -- injury, property, behavioral
@@ -108,7 +108,7 @@ CREATE TABLE incident_report (
 
 -- Claim table - formal insurance claim
 CREATE TABLE claim (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     envelope_id UUID NOT NULL REFERENCES insurance_envelope(id) ON DELETE CASCADE,
     claimant_type TEXT NOT NULL, -- space_owner, participant, platform
     status TEXT NOT NULL CHECK (
@@ -122,19 +122,19 @@ CREATE TABLE claim (
 
 -- Access Grant table - short-lived permission derived from Insurance Envelope
 CREATE TABLE access_grant (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     envelope_id UUID NOT NULL REFERENCES insurance_envelope(id) ON DELETE CASCADE,
     lock_id UUID NOT NULL,
     access_type TEXT NOT NULL CHECK (access_type IN ('qr', 'pin', 'bluetooth', 'api_unlock')),
-    
+
     valid_from TIMESTAMP WITH TIME ZONE NOT NULL,
     valid_until TIMESTAMP WITH TIME ZONE NOT NULL,
-    
+
     attendance_cap INTEGER NOT NULL,
     checkins_used INTEGER DEFAULT 0,
-    
+
     status TEXT NOT NULL CHECK (status IN ('active', 'revoked', 'expired')) DEFAULT 'active',
-    
+
     issued_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

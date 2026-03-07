@@ -39,7 +39,8 @@ class AccessControlService:
             }
         
         # Check time validity
-        now = datetime.utcnow()
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
         if not (grant.valid_from <= now <= grant.valid_until):
             return {
                 "allowed": False,
@@ -62,10 +63,16 @@ class AccessControlService:
                 "enforcement_action": "revoke_and_deny_access"
             }
         
-        # Check attendance capacity
-        if grant.checkins_used >= grant.attendance_cap:
+        # Check attendance capacity atomically using SELECT FOR UPDATE
+        from sqlalchemy import text
+        # Lock the grant row to prevent concurrent updates
+        locked_grant = db.query(AccessGrant).filter(
+            AccessGrant.id == grant.id
+        ).with_for_update().first()
+
+        if locked_grant.checkins_used >= locked_grant.attendance_cap:
             # Capacity exceeded - void the envelope and revoke access
-            self._handle_capacity_exceeded(db, grant, envelope)
+            self._handle_capacity_exceeded(db, locked_grant, envelope)
             return {
                 "allowed": False,
                 "reason": "Attendance capacity exceeded",
@@ -192,22 +199,23 @@ class CapacityEnforcementService:
         Increment the attendance counter for a grant
         """
         from models.insurance_models import AccessGrant
+        # Use SELECT FOR UPDATE to prevent race conditions
         grant = db.query(AccessGrant).filter(
             AccessGrant.id == grant_id
-        ).first()
-        
+        ).with_for_update().first()
+
         if not grant:
             raise AccessDeniedError(f"Access grant {grant_id} not found")
-        
+
         if grant.checkins_used >= grant.attendance_cap:
             raise AccessDeniedError("Attendance capacity already reached")
-        
+
         # Increment the counter
         grant.checkins_used += 1
         db.commit()
-        
+
         remaining_capacity = grant.attendance_cap - grant.checkins_used
-        
+
         # Check if we're at capacity now
         if remaining_capacity == 0:
             # Trigger capacity exceeded handling
@@ -215,14 +223,14 @@ class CapacityEnforcementService:
             envelope = db.query(InsuranceEnvelope).filter(
                 InsuranceEnvelope.id == grant.envelope_id
             ).first()
-            
+
             if envelope:
                 InsuranceEnvelopeService.deactivate_envelope(
                     db,
                     grant.envelope_id,
                     "attendance_cap_reached"
                 )
-        
+
         return {
             "success": True,
             "remaining_capacity": remaining_capacity,
