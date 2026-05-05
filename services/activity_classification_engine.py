@@ -1,20 +1,28 @@
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from models.insurance_models import ActivityClass, SpaceRiskProfile
-from utils.exceptions import ClassificationError
+from utils.exceptions import ClassificationError, ValidationError
+import logging
+import re
+
+logger = logging.getLogger(__name__)
 
 
 class ActivityClassificationEngine:
     """
     Activity Classification Engine (ACE)
     Determines risk classification for activities based on multiple factors
+    
+    IMPORTANT: This engine preserves restriction violations rather than bypassing them.
+    If an activity violates alcohol/minors restrictions, it returns prohibited=True
+    with violation_reasons instead of finding an alternative class.
     """
 
-    # Risk thresholds
+    # Risk thresholds for classification
     RISK_THRESHOLDS = {
         'passive': 0.3,
         'light_physical': 0.6,
-        'tool_based': 0.8
+        'tool_based': 1.0
     }
 
     # Equipment risk multipliers
@@ -23,7 +31,37 @@ class ActivityClassificationEngine:
         'power_tools': 1.5,
         'heating_equipment': 1.2,
         'chemicals': 1.4,
-        'heavy_equipment': 1.3
+        'heavy_equipment': 1.3,
+        'saw': 1.4,
+        'hammer': 1.1,
+        'drill': 1.3,
+        'welding': 1.6,
+        'soldering': 1.2
+    }
+
+    # Activity patterns for classification
+    ACTIVITY_PATTERNS = {
+        'passive': [
+            'board games', 'card games', 'chess', 'checkers', 'scrabble',
+            'reading', 'book club', 'discussion', 'philosophy', 'language exchange',
+            'movie night', 'silent study', 'writing', 'knitting', 'sewing',
+            'painting', 'drawing', 'crafting', 'storytelling', 'meditation',
+            'lecture', 'presentation', 'workshop', 'seminar', 'meeting'
+        ],
+        'light_physical': [
+            'yoga', 'dance', 'stretching', 'exercise', 'fitness',
+            'cooking', 'baking', 'mixology', 'bartending',
+            'arts and crafts', 'pottery', 'ceramics',
+            'photography', 'filmmaking', 'music', 'singing',
+            'pilates', 'tai chi', 'aerobics', 'zumba'
+        ],
+        'tool_based': [
+            'repair', 'fixing', 'woodworking', 'carpentry', 'metalworking',
+            'electronics', 'soldering', 'welding', 'machining',
+            'bike repair', 'car maintenance', 'gardening tools',
+            'power tools', 'drill', 'saw', 'grinder', 'lathe',
+            'construction', 'demolition', 'renovation'
+        ]
     }
 
     @staticmethod
@@ -31,16 +69,37 @@ class ActivityClassificationEngine:
         db: Session,
         space_id: str,
         declared_activity: str,
-        equipment: Optional[list] = None,
+        equipment: Optional[List[str]] = None,
         alcohol: bool = False,
         minors_present: bool = False,
         attendance_cap: int = 10
     ) -> Dict[str, Any]:
         """
-        Classify an activity and determine its risk profile
+        Classify an activity and determine its risk profile.
+        
+        CRITICAL: This method preserves restriction violations. If the classified
+        activity doesn't allow alcohol or minors but they are present, it returns
+        prohibited=True with violation_reasons. It does NOT find an alternative
+        class that allows the violations.
+        
+        Returns:
+            Dict with keys:
+            - activity_class_id: UUID of matched class (or None)
+            - activity_class_slug: slug of matched class
+            - risk_score: calculated risk score (0.0-1.0)
+            - required_limits: coverage limits for this class
+            - prohibited: True if activity violates restrictions
+            - violation_reasons: list of violation descriptions
         """
         if equipment is None:
             equipment = []
+
+        # Validate inputs
+        if not declared_activity or not declared_activity.strip():
+            raise ValidationError("declared_activity cannot be empty")
+        
+        if attendance_cap <= 0:
+            raise ValidationError("attendance_cap must be greater than 0")
 
         # Get space risk profile
         space_profile = db.query(SpaceRiskProfile).filter(
@@ -50,26 +109,34 @@ class ActivityClassificationEngine:
         if not space_profile:
             raise ClassificationError(f"Space profile {space_id} not found")
 
-        # Determine base activity class slug
-        activity_class_slug = ActivityClassificationEngine._determine_base_class_slug(declared_activity)
-
-        # Get the actual activity class from the database
+        # Determine base activity class from declared activity
+        suggested_slug = ActivityClassificationEngine._determine_base_class_slug(declared_activity)
+        
+        # Get the activity class from database
         activity_class = db.query(ActivityClass).filter(
-            ActivityClass.slug == activity_class_slug
+            ActivityClass.slug == suggested_slug
         ).first()
 
         if not activity_class:
-            # If the specific class doesn't exist in DB, use the closest match
-            activity_class = ActivityClassificationEngine._find_closest_class_in_db(db, activity_class_slug)
+            # Try to find closest match
+            activity_class = ActivityClassificationEngine._find_closest_class_in_db(db, suggested_slug)
+            
             if not activity_class:
-                # Fallback to passive class if nothing matches
-                activity_class = db.query(ActivityClass).filter(ActivityClass.slug == 'passive').first()
+                # Last resort: use passive as default
+                activity_class = db.query(ActivityClass).filter(
+                    ActivityClass.slug == 'passive'
+                ).first()
+                
                 if not activity_class:
-                    raise ClassificationError("No activity classes defined in the system")
+                    raise ClassificationError(
+                        "No activity classes defined in the system. "
+                        "Please seed the database with activity classes."
+                    )
 
         # Calculate risk modifiers
+        base_risk = float(activity_class.base_risk_score) if activity_class.base_risk_score else 0.1
         risk_modifiers = ActivityClassificationEngine._calculate_risk_modifiers(
-            float(activity_class.base_risk_score) if activity_class.base_risk_score else 0.1,
+            base_risk,
             space_profile,
             equipment,
             alcohol,
@@ -78,131 +145,128 @@ class ActivityClassificationEngine:
         )
 
         # Calculate final risk score
-        base_risk = float(activity_class.base_risk_score) if activity_class.base_risk_score else 0.1
         final_risk_score = ActivityClassificationEngine._apply_modifiers(
             base_risk,
             risk_modifiers
         )
 
-        # Find appropriate activity class based on risk level
-        matched_class = ActivityClassificationEngine._find_matching_class(
-            db, final_risk_score, alcohol, minors_present
-        )
-
-        if not matched_class:
-            return {
-                'activity_class': None,
-                'risk_score': final_risk_score,
-                'required_limits': {},
-                'prohibited': True,
-                'violation_reasons': ['No matching activity class found for calculated risk']
-            }
-
-        # Validate against class restrictions
+        # Validate against class restrictions - THIS IS CRITICAL
+        # We do NOT find an alternative class - we report violations
         violations = ActivityClassificationEngine._validate_against_class(
-            matched_class, alcohol, minors_present, equipment
+            activity_class, alcohol, minors_present, equipment
         )
 
         return {
-            'activity_class_id': matched_class.id,
-            'activity_class_slug': matched_class.slug,
+            'activity_class_id': str(activity_class.id),
+            'activity_class_slug': activity_class.slug,
             'risk_score': round(final_risk_score, 2),
-            'required_limits': matched_class.default_limits or {},
+            'required_limits': activity_class.default_limits or {},
             'prohibited': len(violations) > 0,
-            'violation_reasons': violations
+            'violation_reasons': violations,
+            'equipment_risk': risk_modifiers.get('equipment', 1.0),
+            'space_hazard': float(space_profile.hazard_rating) if space_profile.hazard_rating else 0.0
         }
 
     @staticmethod
     def _determine_base_class_slug(declared_activity: str) -> str:
         """
-        Determine the base activity class slug based on declared activity
+        Determine the base activity class slug based on declared activity.
+        Uses pattern matching with word boundaries to avoid false positives.
         """
         activity_lower = declared_activity.lower()
-
-        # Define activity patterns
-        activity_patterns = {
-            'passive': [
-                'board games', 'card games', 'chess', 'checkers', 'scrabble',
-                'reading', 'book club', 'discussion', 'philosophy', 'language exchange',
-                'movie night', 'silent study', 'writing', 'knitting', 'sewing',
-                'painting', 'drawing', 'crafting', 'storytelling', 'silent reading'
-            ],
-            'light_physical': [
-                'yoga', 'dance', 'stretching', 'exercise', 'fitness',
-                'cooking', 'baking', 'mixology', 'bartending',
-                'arts and crafts', 'pottery', 'ceramics',
-                'photography', 'filmmaking', 'music', 'singing'
-            ],
-            'tool_based': [
-                'repair', 'fixing', 'woodworking', 'carpentry', 'metalworking',
-                'electronics', 'soldering', 'welding', 'machining',
-                'bike repair', 'car maintenance', 'gardening tools',
-                'power tools', 'drill', 'saw', 'grinder', 'lathe'
-            ]
+        
+        # Score each class based on pattern matches
+        class_scores = {
+            'passive': 0,
+            'light_physical': 0,
+            'tool_based': 0
         }
-
-        # Match against patterns
-        for class_name, patterns in activity_patterns.items():
+        
+        for class_name, patterns in ActivityClassificationEngine.ACTIVITY_PATTERNS.items():
             for pattern in patterns:
-                if pattern in activity_lower:
-                    return class_name
-
-        # Default to passive if no match found
+                # Use word boundary matching to avoid false positives
+                # e.g., "cooking" matches but "book cooking" (cookbook) doesn't
+                pattern_regex = r'\b' + re.escape(pattern) + r'\b'
+                if re.search(pattern_regex, activity_lower):
+                    class_scores[class_name] += 1
+        
+        # Return class with highest score
+        max_score = max(class_scores.values())
+        if max_score == 0:
+            return 'passive'  # Default to passive if no matches
+        
+        # Return first class with max score (priority order)
+        for class_name in ['tool_based', 'light_physical', 'passive']:
+            if class_scores[class_name] == max_score:
+                return class_name
+        
         return 'passive'
 
     @staticmethod
     def _find_closest_class_in_db(db: Session, suggested_slug: str) -> Optional[ActivityClass]:
         """
-        Find the closest matching activity class in the database
+        Find the closest matching activity class in the database.
+        Returns None if no suitable match found.
         """
         # First try exact match
         activity_class = db.query(ActivityClass).filter(
             ActivityClass.slug == suggested_slug
         ).first()
-        
+
         if activity_class:
             return activity_class
-        
-        # If not found, try to find similar classes
-        if 'passive' in suggested_slug or suggested_slug in ['board games', 'reading', 'discussion']:
-            return db.query(ActivityClass).filter(ActivityClass.slug == 'passive').first()
-        elif 'physical' in suggested_slug or suggested_slug in ['yoga', 'dance', 'cooking']:
-            return db.query(ActivityClass).filter(ActivityClass.slug == 'light_physical').first()
-        elif 'tool' in suggested_slug or suggested_slug in ['repair', 'woodworking']:
-            return db.query(ActivityClass).filter(ActivityClass.slug == 'tool_based').first()
-        
+
+        # Try partial match
+        activity_class = db.query(ActivityClass).filter(
+            ActivityClass.slug.contains(suggested_slug)
+        ).first()
+
+        if activity_class:
+            return activity_class
+
         return None
 
     @staticmethod
     def _calculate_risk_modifiers(
         base_risk: float,
         space_profile: SpaceRiskProfile,
-        equipment: list,
+        equipment: List[str],
         alcohol: bool,
         minors_present: bool,
         attendance_cap: int
     ) -> Dict[str, float]:
         """
-        Calculate risk modifiers based on various factors
+        Calculate risk modifiers based on various factors.
         """
         modifiers = {}
 
-        # Space hazard modifier
+        # Space hazard modifier (adds to risk)
         if space_profile.hazard_rating is not None:
-            modifiers['space_hazard'] = float(space_profile.hazard_rating)
+            hazard = float(space_profile.hazard_rating)
+            modifiers['space_hazard'] = hazard / 10.0  # Scale down contribution
 
-        # Equipment risk modifier
+        # Equipment risk modifier (multiplicative)
         equipment_risk = 1.0
         for equip in equipment:
-            if equip in ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS:
-                equipment_risk *= ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS[equip]
-        modifiers['equipment'] = equipment_risk
+            equip_lower = equip.lower() if equip else ''
+            # Check exact match first
+            if equip_lower in ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS:
+                equipment_risk *= ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS[equip_lower]
+            else:
+                # Check partial match
+                for known_equip, multiplier in ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS.items():
+                    if known_equip in equip_lower:
+                        equipment_risk *= multiplier
+                        break
+        
+        if equipment_risk > 1.0:
+            modifiers['equipment'] = equipment_risk
 
-        # Alcohol modifier
+        # Alcohol modifier (increases risk)
         if alcohol:
             modifiers['alcohol'] = 1.4
 
-        # Minors modifier
+        # Minors modifier (increases supervision risk)
         if minors_present:
             modifiers['minors'] = 1.2
 
@@ -219,83 +283,126 @@ class ActivityClassificationEngine:
     @staticmethod
     def _apply_modifiers(base_risk: float, modifiers: Dict[str, float]) -> float:
         """
-        Apply risk modifiers to base risk score
+        Apply risk modifiers to base risk score.
+        Space hazard adds to risk, other modifiers multiply.
         """
         final_risk = base_risk
 
         for modifier_name, modifier_value in modifiers.items():
             if modifier_name == 'space_hazard':
-                # Space hazard adds to risk rather than multiplying
-                final_risk = min(1.0, final_risk + (modifier_value / 10.0))
+                # Space hazard adds to risk
+                final_risk = min(1.0, final_risk + modifier_value)
             else:
-                # Other modifiers multiply the risk
+                # Other modifiers multiply
                 final_risk = min(1.0, final_risk * modifier_value)
 
         return final_risk
-
-    @staticmethod
-    def _find_matching_class(
-        db: Session,
-        risk_score: float,
-        alcohol: bool,
-        minors_present: bool
-    ) -> Optional[ActivityClass]:
-        """
-        Find the most appropriate activity class based on risk score
-        """
-        # Query all activity classes ordered by risk threshold
-        classes = db.query(ActivityClass).order_by(ActivityClass.base_risk_score).all()
-
-        # Find the first class that accommodates the risk level and constraints
-        for cls in classes:
-            # Check if risk score fits within class range (with some tolerance)
-            if risk_score <= float(cls.base_risk_score) + 0.3 if cls.base_risk_score else 1.0:  # Allow some flexibility
-                # Check alcohol and minors constraints
-                if (not alcohol or cls.allows_alcohol) and (not minors_present or cls.allows_minors):
-                    return cls
-
-        # If no class fits the risk level, return the highest risk class that allows the constraints
-        for cls in reversed(classes):
-            if (not alcohol or cls.allows_alcohol) and (not minors_present or cls.allows_minors):
-                return cls
-
-        # Last resort: return any class that matches constraints, regardless of risk
-        for cls in classes:
-            if (not alcohol or cls.allows_alcohol) and (not minors_present or cls.allows_minors):
-                return cls
-
-        return None
 
     @staticmethod
     def _validate_against_class(
         activity_class: ActivityClass,
         alcohol: bool,
         minors_present: bool,
-        equipment: list
-    ) -> list:
+        equipment: List[str]
+    ) -> List[str]:
         """
-        Validate the activity against class restrictions
+        Validate the activity against class restrictions.
+        Returns list of violation reasons (empty if no violations).
+        
+        CRITICAL: This method reports violations, it does not try to find
+        an alternative class that allows the violations.
         """
         violations = []
 
+        # Check alcohol restriction
         if alcohol and not activity_class.allows_alcohol:
-            violations.append("Alcohol not permitted for this activity class")
+            violations.append(
+                f"Activity class '{activity_class.slug}' does not permit alcohol"
+            )
 
+        # Check minors restriction
         if minors_present and not activity_class.allows_minors:
-            violations.append("Minors not permitted for this activity class")
+            violations.append(
+                f"Activity class '{activity_class.slug}' does not permit minors"
+            )
 
         # Check prohibited equipment
         if activity_class.prohibited_equipment:
+            prohibited = activity_class.prohibited_equipment
+            if isinstance(prohibited, dict):
+                prohibited = list(prohibited.keys())
+            elif isinstance(prohibited, list):
+                pass
+            else:
+                prohibited = []
+            
             for equip in equipment:
-                if equip in activity_class.prohibited_equipment:
-                    violations.append(f"Equipment '{equip}' prohibited for this activity class")
+                equip_lower = equip.lower() if equip else ''
+                for prohibited_item in prohibited:
+                    prohibited_lower = prohibited_item.lower() if prohibited_item else ''
+                    if prohibited_lower in equip_lower or equip_lower in prohibited_lower:
+                        violations.append(
+                            f"Equipment '{equip}' is prohibited for activity class '{activity_class.slug}'"
+                        )
+                        break
 
         return violations
+
+    @staticmethod
+    def get_available_classes(db: Session) -> List[Dict[str, Any]]:
+        """
+        Get all available activity classes with their restrictions.
+        """
+        classes = db.query(ActivityClass).all()
+        return [
+            {
+                'id': str(cls.id),
+                'slug': cls.slug,
+                'description': cls.description,
+                'base_risk_score': float(cls.base_risk_score) if cls.base_risk_score else 0.0,
+                'allows_alcohol': cls.allows_alcohol,
+                'allows_minors': cls.allows_minors,
+                'default_limits': cls.default_limits or {},
+                'prohibited_equipment': cls.prohibited_equipment or {}
+            }
+            for cls in classes
+        ]
+
+    @staticmethod
+    def validate_equipment(equipment: List[str]) -> Dict[str, Any]:
+        """
+        Validate equipment list and return risk assessment.
+        """
+        known_equipment = set(ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS.keys())
+        unknown = []
+        high_risk = []
+        
+        for equip in equipment:
+            equip_lower = equip.lower() if equip else ''
+            is_known = False
+            for known in known_equipment:
+                if known in equip_lower or equip_lower in known:
+                    is_known = True
+                    multiplier = ActivityClassificationEngine.EQUIPMENT_RISK_MULTIPLIERS.get(known, 1.0)
+                    if multiplier >= 1.4:
+                        high_risk.append(equip)
+                    break
+            
+            if not is_known:
+                unknown.append(equip)
+        
+        return {
+            'valid': len(unknown) == 0,
+            'unknown_equipment': unknown,
+            'high_risk_equipment': high_risk,
+            'equipment_count': len(equipment)
+        }
 
 
 class ActivityProfile:
     """
-    Represents the output of activity classification
+    Represents the output of activity classification.
+    This class is kept for backward compatibility.
     """
     def __init__(
         self,
@@ -304,7 +411,7 @@ class ActivityProfile:
         risk_score: float,
         required_limits: Dict[str, Any],
         prohibited: bool,
-        violation_reasons: Optional[list] = None
+        violation_reasons: Optional[List[str]] = None
     ):
         self.activity_class_id = activity_class_id
         self.activity_class_slug = activity_class_slug
@@ -312,3 +419,15 @@ class ActivityProfile:
         self.required_limits = required_limits
         self.prohibited = prohibited
         self.violation_reasons = violation_reasons or []
+    
+    @classmethod
+    def from_classification_result(cls, result: Dict[str, Any]) -> 'ActivityProfile':
+        """Create ActivityProfile from classification result dict"""
+        return cls(
+            activity_class_id=result.get('activity_class_id'),
+            activity_class_slug=result.get('activity_class_slug'),
+            risk_score=result.get('risk_score', 0.0),
+            required_limits=result.get('required_limits', {}),
+            prohibited=result.get('prohibited', False),
+            violation_reasons=result.get('violation_reasons', [])
+        )
